@@ -1,0 +1,24 @@
+# 런타임 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 로컬 벡터 DB
+chroma_db/
+
+# 크롤링 데이터 (대용량 + 저작권)
+estimate_data/
+
+# 임시/상태 파일
+batch_state.json
+eval_log.json
+eval_results/
+
+# 환경변수
+.env
+
+# 문서
+docs/
+
+# Claude Code 로컬 설정
+.claude/
