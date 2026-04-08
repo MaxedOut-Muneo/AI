@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -c \"import json; d=json.load\\(open\\('C:/Users/Admin/Desktop/4-1/종합프로젝트/crawler/estimate_data/estimates.json', encoding='utf-8'\\)\\); print\\(list\\(d[0].keys\\(\\)\\)\\); print\\(d[0]\\)\" 2>/dev/null | head -30)",
+      "Bash(python -c \"\nimport json\nwith open\\('C:/Users/Admin/Desktop/4-1/종합프로젝트/crawler/estimate_data/estimates.json', encoding='utf-8'\\) as f:\n    d = json.load\\(f\\)\nprint\\('총 항목:', len\\(d\\)\\)\nprint\\('키:', list\\(d[0].keys\\(\\)\\)\\)\nprint\\(\\)\nprint\\(json.dumps\\(d[0], ensure_ascii=False, indent=2\\)[:800]\\)\n\")",
+      "Bash(python -c \"\nimport json, pathlib\np = pathlib.Path\\(r'C:\\\\Users\\\\Admin\\\\Desktop\\\\4-1\\\\종합프로젝트\\\\crawler\\\\estimate_data\\\\images\\\\872810\\\\872810.json'\\)\nd = json.loads\\(p.read_text\\(encoding='utf-8'\\)\\)\nprint\\(list\\(d.keys\\(\\)\\)\\)\nprint\\(json.dumps\\(d, ensure_ascii=False, indent=2\\)[:1000]\\)\n\")",
+      "Skill(claude-api)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(list\\(d.keys\\(\\)\\), ensure_ascii=False, indent=2\\)\\)\")",
+      "Bash(python3:*)",
+      "Bash(python -c \":*)",
+      "Bash(python internal_consistency_check.py)",
+      "Bash(for dir:*)",
+      "Bash(do)",
+      "Bash(echo \"=== $dir ===\")",
+      "Bash(done)",
+      "Bash(python cleanup_bad_data.py)",
+      "Bash(python -c ':*)",
+      "Bash(python -X utf8 eval_all.py --note \"관련성 기반 Hit/MRR 평가 적용\")",
+      "Bash(python -X utf8 build_rag.py)",
+      "Bash(python -X utf8 eval_all.py --note \"has_* 추출 line_items 카테고리 반영\")",
+      "Bash(python -X utf8 eval_all.py --note \"임베딩 텍스트에 line_items 카테고리 추가\")"
+    ]
+  }
+}

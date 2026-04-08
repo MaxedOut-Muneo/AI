@@ -1,0 +1,12 @@
+# 환경변수
+python-dotenv>=1.0.0
+
+# 크롤러
+selenium>=4.31.0
+beautifulsoup4>=4.12.0
+requests>=2.32.0
+
+# RAG 파이프라인
+google-generativeai>=0.8.0
+chromadb>=0.6.0
+sentence-transformers>=3.0.0
