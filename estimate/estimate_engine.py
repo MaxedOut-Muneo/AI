@@ -86,6 +86,12 @@ REGION_MAP = {
     "주방": ["가구공사"],
 }
 
+# 공종별 제외 description (마루↔장판 혼재 방지)
+공종_EXCLUDE_DESC: dict[str, set] = {
+    "마루": {"장판"},
+    "장판": {"강마루"},
+}
+
 # description 정규화 테이블: category → [(포함 키워드 목록, 대표 이름)]
 # 매칭 순서가 우선순위 — 위에 있을수록 먼저 매칭
 NORM_MAP = {
@@ -95,7 +101,7 @@ NORM_MAP = {
         (["합지"],                          "합지벽지"),
         (["퍼티", "바탕면처리", "벽지제거"], "바탕면처리·퍼티"),
         (["부자재"],                         "부자재"),
-        (["인건비"],                         "인건비"),
+        (["인건비", "안건비"],               "인건비"),
         (["운송비"],                         "운송비"),
     ],
     "바닥공사": [
@@ -103,10 +109,11 @@ NORM_MAP = {
         (["자연애", "장판", "LX", "KCC"],    "장판"),
         (["합판"],                           "합판"),
         (["부자재"],                         "부자재"),
-        (["인건비"],                         "인건비"),
+        (["인건비", "안건비"],               "인건비"),
         (["운송비"],                         "운송비"),
     ],
     "타일공사": [
+        (["주방벽타일", "주방타일"],          None),       # 타일공사 내 주방 관련 오기재 제외
         (["현관"],                           "현관타일"),
         (["발코니"],                         "발코니타일"),
         (["욕실 벽", "욕실벽"],              "욕실벽타일"),
@@ -115,7 +122,7 @@ NORM_MAP = {
         (["코너비트", "코너"],               "코너비트"),
         (["줄눈"],                           "줄눈"),
         (["부자재"],                         "부자재"),
-        (["인건비"],                         "인건비"),
+        (["인건비", "안건비"],               "인건비"),
         (["운송비"],                         "운송비"),
     ],
     "수전공사": [
@@ -125,7 +132,7 @@ NORM_MAP = {
         (["환풍기"],                         "욕실환풍기"),
         (["휴지걸이", "수건걸이", "액세서리", "유리코너"], "욕실액세서리"),
         (["부자재"],                         "부자재"),
-        (["인건비"],                         "인건비"),
+        (["인건비", "안건비"],               "인건비"),
         (["운송비"],                         "운송비"),
     ],
     "도기공사": [
@@ -133,17 +140,21 @@ NORM_MAP = {
         (["양변도기", "양변기"],             "양변기"),
         (["자바라"],                         "자바라트랩"),
         (["부자재"],                         "부자재"),
-        (["인건비"],                         "인건비"),
+        (["인건비", "안건비"],               "인건비"),
         (["운송비", "운반비"],               "운송비"),
     ],
     "가구공사": [
         (["싱크대", "싱크", "사재싱크"],     "싱크대"),
         (["냉장고장", "냉장고 장"],          "냉장고장"),
+        (["붙박이", "붙박이장"],             "붙박이장"),
+        (["신발장"],                         "신발장"),
+        (["수납장"],                         "수납장"),
+        (["수전", "원홀"],                   "주방수전"),
         (["현관장"],                         "현관장"),
         (["키큰장"],                         "키큰장"),
         (["후드"],                           "후드"),
         (["부자재"],                         "부자재"),
-        (["인건비", "시공인건비"],           "인건비"),
+        (["인건비", "시공인건비", "안건비"], "인건비"),
         (["운송비"],                         "운송비"),
     ],
     "철거공사": [
@@ -152,7 +163,7 @@ NORM_MAP = {
         (["마루철거"],                       "마루철거"),
         (["타일철거"],                       "타일철거"),
         (["부자재"],                         "부자재"),
-        (["인건비"],                         "인건비"),
+        (["인건비", "안건비"],               "인건비"),
         (["운송비"],                         "운송비"),
     ],
 }
@@ -291,25 +302,34 @@ class EstimateEngine:
         result = {}
         for 공종 in 공종들:
             cats = 공종_TO_CATEGORY.get(공종, [])
-            items_for_공종: list[dict] = []
+            excluded = 공종_EXCLUDE_DESC.get(공종, set())
+
+            # 서브 카테고리(타일공사·수전공사·도기공사 등)를 공종 단위로 합산
+            # → 동일 normalized description 중복 방지
+            merged: dict[str, list] = defaultdict(list)
             for cat in cats:
-                cat_data = amounts.get(cat, {})
-                for desc, amt_list in cat_data.items():
-                    if len(amt_list) < 2:  # 1건만 있는 항목 제외
+                for desc, amt_list in amounts.get(cat, {}).items():
+                    if desc in excluded:
                         continue
-                    trimmed = sorted(amt_list)
-                    if len(trimmed) > 4:
-                        cut = len(trimmed) // 5
-                        trimmed = trimmed[cut:-cut]
-                    items_for_공종.append({
-                        "description": desc,
-                        "amount_range": {
-                            "최소": min(trimmed),
-                            "중간": int(statistics.median(trimmed)),
-                            "최대": max(trimmed),
-                        },
-                        "등장_사례_수": len(amt_list),
-                    })
+                    merged[desc].extend(amt_list)
+
+            items_for_공종: list[dict] = []
+            for desc, amt_list in merged.items():
+                if len(amt_list) < 2:  # 1건만 있는 항목 제외
+                    continue
+                trimmed = sorted(amt_list)
+                if len(trimmed) > 4:
+                    cut = len(trimmed) // 5
+                    trimmed = trimmed[cut:-cut]
+                items_for_공종.append({
+                    "description": desc,
+                    "amount_range": {
+                        "최소": min(trimmed),
+                        "중간": int(statistics.median(trimmed)),
+                        "최대": max(trimmed),
+                    },
+                    "등장_사례_수": len(amt_list),
+                })
 
             # 등장 사례 수 내림차순 정렬, 식대·운송비 등 부대비용은 하단으로
             ancillary = {"인건비", "운송비", "부자재"}
@@ -364,6 +384,11 @@ class EstimateEngine:
             flag = 공종_TO_HAS.get(공종)
             if flag:
                 conditions.append({flag: {"$eq": "true"}})
+
+        if len(지역들) == 1:
+            conditions.append({"region": {"$eq": 지역들[0]}})
+        elif len(지역들) > 1:
+            conditions.append({"region": {"$in": 지역들}})
 
         if not conditions:
             return None
@@ -447,7 +472,8 @@ class EstimateEngine:
         f = 시기_FACTOR.get(inp.get("공사시기", "미정"), 1.0)
         if f != 1.0:
             factor *= f
-            notes.append(f"성수기 할증 ({f:+.0%})")
+            label = "성수기 할증" if f > 1.0 else "비수기 할인"
+            notes.append(f"{label} ({(f-1):+.1%})")
 
         f = 지역_FACTOR.get(inp.get("지역", "서울"), 1.0)
         if f != 1.0:
