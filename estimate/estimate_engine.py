@@ -115,6 +115,7 @@ REGION_MAP = {
     "장판":  {"강마루"},
     "주방":  {"붙박이장", "신발장", "수납장", "현관장", "키큰장"},  # 주방 = 싱크대·후드 위주
     "가구":  {"싱크대", "냉장고장", "후드", "주방수전"},            # 가구 = 붙박이·수납 위주
+    "욕실":  {"거실바닥타일"},                                      # 욕실 공사와 무관한 타일 제외
 }
 
 # description 정규화 테이블: category → [(포함 키워드 목록, 대표 이름)]
@@ -131,7 +132,7 @@ NORM_MAP = {
         (["운송비"],                         "운송비"),
     ],
     "바닥공사": [
-        (["강마루"],                         "강마루"),
+        (["강마루", "강화마루", "원목마루", "마루재", "합판마루"], "강마루"),
         (["자연애", "장판", "LX", "KCC"],    "장판"),
         (["합판"],                           "합판"),
         (["부자재"],                         "부자재"),
@@ -748,15 +749,6 @@ class EstimateEngine:
         if not total_costs:
             return {"error": "유사 사례를 찾을 수 없습니다. 조건을 조정해 주세요."}
 
-        # 이상치 제거 후 총 견적 범위
-        trimmed = sorted(total_costs)
-        if len(trimmed) > 4:
-            cut = len(trimmed) // 5
-            trimmed = trimmed[cut:-cut]
-
-        base_lo  = min(trimmed)
-        base_hi  = max(trimmed)
-
         factor, notes, extra, 마감비율_적용 = self.calc_factors(inp)
 
         # 공종별 개별 보정 (도배 범위·도배지·방 개수) — cat_costs에 직접 반영
@@ -766,22 +758,37 @@ class EstimateEngine:
                 cat_costs[공종] = [int(v * f) for v in cat_costs[공종]]
             notes.extend(공종_notes)
 
-        adj_lo  = int(base_lo * factor) + extra
-        adj_hi  = int(base_hi * factor) + extra
+        # 공종별 단가 범위 (글로벌 보정계수 포함)
+        공종별_범위 = {}
+        for 공종 in 추출대상_공종들:
+            r = self.cost_range(cat_costs.get(공종, []))
+            if r:
+                공종별_범위[공종] = {
+                    "최소": int(r["최소"] * factor),
+                    "중간": int(r["중간"] * factor),
+                    "최대": int(r["최대"] * factor),
+                }
+
+        # 총 견적 = 공종별 단가 합산 + 추가 비용
+        # (기존 total_cost 기반 방식은 전체 리모델링 비용이 포함돼 과대 산정됨)
+        if 공종별_범위:
+            adj_lo = sum(r["최소"] for r in 공종별_범위.values()) + extra
+            adj_hi = sum(r["최대"] for r in 공종별_범위.values()) + extra
+        else:
+            # fallback: 공종별 비용 데이터가 없을 때 total_costs 기반
+            trimmed = sorted(total_costs)
+            if len(trimmed) > 4:
+                cut = len(trimmed) // 5
+                trimmed = trimmed[cut:-cut]
+            adj_lo = int(min(trimmed) * factor) + extra
+            adj_hi = int(max(trimmed) * factor) + extra
 
         # 마감/공과잡비: 보정 후 총 공사비의 3% 추가
         if 마감비율_적용:
-            adj_lo  = int(adj_lo  * (1 + 마감_비율))
-            adj_hi  = int(adj_hi  * (1 + 마감_비율))
+            adj_lo = int(adj_lo * (1 + 마감_비율))
+            adj_hi = int(adj_hi * (1 + 마감_비율))
 
         adj_mid = (adj_lo + adj_hi) // 2
-
-        # 공종별 단가 범위 (공종별 개별 보정 반영됨)
-        공종별_범위 = {}
-        for 공종 in 공종들:
-            r = self.cost_range(cat_costs.get(공종, []))
-            if r:
-                공종별_범위[공종] = r
 
         # 참고 사례 요약 (상위 5개)
         참고_사례 = sorted(
