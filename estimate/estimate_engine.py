@@ -284,6 +284,29 @@ _SKIP_KEYWORDS = ["식대", "주차", "통행료"]
     "마루", "타일", "욕실", "주방", "도장", "마감/공과잡비",
 ]
 
+# ── P2 보정 상수 ───────────────────────────────────────
+
+# 도배 범위별 전체 평수 대비 면적 비율
+도배_범위_비율: dict[str, float] = {
+    "전체": 1.00,
+    "거실": 0.35,
+    "침실": 0.40,   # 3개방 기준 — 방 개수로 보정됨
+    "주방": 0.10,
+}
+
+# 방 개수별 침실 면적 비율 (3개방 0.40 기준, 방 하나당 ≈0.13)
+방별_침실_비율: dict[int, float] = {1: 0.13, 2: 0.27, 3: 0.40, 4: 0.53}
+
+# 도배지 종류별 단가 보정계수 (실크벽지 기준 1.0)
+도배지_FACTOR: dict[str, float] = {
+    "실크벽지":  1.00,
+    "합지벽지":  0.75,
+    "천연벽지":  1.40,
+}
+
+# 방 개수별 마루·장판 면적 보정계수 (3개방 기준 1.0)
+방_마루_비율: dict[int, float] = {1: 0.70, 2: 0.85, 3: 1.00, 4: 1.15}
+
 import chromadb
 from chromadb.utils import embedding_functions
 from chroma_client import get_chroma_client
@@ -596,7 +619,64 @@ class EstimateEngine:
 
         return factor, notes, 양중 + 철거추가, 마감비율_적용
 
-    # ── 6. 공종별 단가 범위 계산 ─────────────────────────
+    # ── 6. 공종별 개별 보정계수 계산 ────────────────────────
+
+    @staticmethod
+    def calc_공종_factors(inp: dict) -> dict[str, tuple[float, list]]:
+        """도배 범위·도배지 종류·방 개수 등 공종별 개별 보정계수 계산.
+
+        반환: { 공종명: (factor, [note, ...]) }
+        factor가 1.0인 공종은 포함하지 않음.
+        """
+        result: dict[str, tuple[float, list]] = {}
+        공종들  = inp.get("공종", [])
+        방개수  = min(int(inp.get("방개수") or 3), 4)   # 4개 이상은 4로 처리
+
+        # ── 도배 ────────────────────────────────────────
+        if "도배" in 공종들:
+            도배_inp = inp.get("도배", {})
+            f = 1.0
+            notes: list[str] = []
+
+            # 범위 보정 — "전체"가 아닌 경우에만 적용
+            범위_raw = 도배_inp.get("범위", "전체")
+            범위_list = 범위_raw if isinstance(범위_raw, list) else [범위_raw]
+
+            if "전체" not in 범위_list:
+                ratio = 0.0
+                for r in 범위_list:
+                    if r == "침실":
+                        # 방 개수로 침실 면적 비율 보정
+                        ratio += 방별_침실_비율.get(방개수, 0.40)
+                    else:
+                        ratio += 도배_범위_비율.get(r, 0.0)
+                ratio = max(0.05, min(ratio, 1.0))  # 5~100% 클램프
+                f *= ratio
+                notes.append(f"도배 범위 {'·'.join(범위_list)} (면적 {ratio:.0%})")
+
+            # 도배지 종류 보정
+            도배지 = 도배_inp.get("도배지종류", "실크벽지")
+            f_지   = 도배지_FACTOR.get(도배지, 1.0)
+            if f_지 != 1.0:
+                f *= f_지
+                notes.append(f"도배지 {도배지} ({f_지-1:+.0%})")
+
+            if f != 1.0:
+                result["도배"] = (f, notes)
+
+        # ── 마루 / 장판 (방 개수 보정) ──────────────────
+        for 공종 in ("마루", "장판"):
+            if 공종 in 공종들:
+                f_마루 = 방_마루_비율.get(방개수, 1.0)
+                if f_마루 != 1.0:
+                    result[공종] = (
+                        f_마루,
+                        [f"방 {방개수}개 기준 바닥 면적 보정 ({f_마루-1:+.0%})"],
+                    )
+
+        return result
+
+    # ── 7. 공종별 단가 범위 계산 ─────────────────────────
 
     @staticmethod
     def cost_range(values):
@@ -639,6 +719,13 @@ class EstimateEngine:
 
         factor, notes, extra, 마감비율_적용 = self.calc_factors(inp)
 
+        # 공종별 개별 보정 (도배 범위·도배지·방 개수) — cat_costs에 직접 반영
+        공종_factors = self.calc_공종_factors(inp)
+        for 공종, (f, 공종_notes) in 공종_factors.items():
+            if 공종 in cat_costs:
+                cat_costs[공종] = [int(v * f) for v in cat_costs[공종]]
+            notes.extend(공종_notes)
+
         adj_lo  = int(base_lo * factor) + extra
         adj_hi  = int(base_hi * factor) + extra
 
@@ -649,7 +736,7 @@ class EstimateEngine:
 
         adj_mid = (adj_lo + adj_hi) // 2
 
-        # 공종별 단가 범위
+        # 공종별 단가 범위 (공종별 개별 보정 반영됨)
         공종별_범위 = {}
         for 공종 in 공종들:
             r = self.cost_range(cat_costs.get(공종, []))
@@ -726,7 +813,7 @@ SAMPLE_INPUT = {
     "거주중공사": "공실",
     "공사시기":   "1~3개월",
 
-    "도배": {"범위": "전체", "도배지종류": "실크벽지", "초배포함": "있음"},
+    "도배": {"범위": ["거실", "침실"], "도배지종류": "실크벽지", "초배포함": "있음"},
     "마루": {"자재종류": "강마루", "범위": "전체", "철거여부": "있음"},
     "욕실": {"개수": 1, "크기": "중형", "도기교체": "있음",
              "방수포함": "있음", "욕조샤워부스": "없음", "타일등급": "중급"},
