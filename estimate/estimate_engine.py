@@ -121,6 +121,7 @@ REGION_MAP = {
 # 매칭 순서가 우선순위 — 위에 있을수록 먼저 매칭
 NORM_MAP = {
     "도배공사": [
+        (["LX", "KCC", "자연애", "장판", "강마루", "마루"],  None),  # 바닥재 오기재 제외
         (["초배"],                          "초배지"),
         (["실크"],                          "실크벽지"),
         (["합지"],                          "합지벽지"),
@@ -595,28 +596,28 @@ class EstimateEngine:
         f = 자재_FACTOR.get(inp.get("자재등급", "중급"), 1.0)
         if f != 1.0:
             factor *= f
-            notes.append(f"자재등급 {inp.get('자재등급')} ({f:+.0%})")
+            notes.append(f"자재등급 {inp.get('자재등급')} ({f-1:+.0%})")
 
         f = 연식_FACTOR.get(inp.get("건물연식", "10~20년"), 1.0)
         if f != 1.0:
             factor *= f
-            notes.append(f"건물연식 {inp.get('건물연식')} ({f:+.0%})")
+            notes.append(f"건물연식 {inp.get('건물연식')} ({f-1:+.0%})")
 
         f = 거주_FACTOR.get(inp.get("거주중공사", "공실"), 1.0)
         if f != 1.0:
             factor *= f
-            notes.append(f"거주 중 공사 ({f:+.0%})")
+            notes.append(f"거주 중 공사 ({f-1:+.0%})")
 
         f = 시기_FACTOR.get(inp.get("공사시기", "미정"), 1.0)
         if f != 1.0:
             factor *= f
             label = "성수기 할증" if f > 1.0 else "비수기 할인"
-            notes.append(f"{label} ({(f-1):+.1%})")
+            notes.append(f"{label} ({f-1:+.1%})")
 
         f = 지역_FACTOR.get(inp.get("지역", "서울"), 1.0)
         if f != 1.0:
             factor *= f
-            notes.append(f"지역 인건비 {inp.get('지역')} ({f:+.0%})")
+            notes.append(f"지역 인건비 {inp.get('지역')} ({f-1:+.0%})")
 
         # 트럭 접근 불가 할증
         f = 트럭_FACTOR.get(inp.get("트럭접근", "가능"), 1.0)
