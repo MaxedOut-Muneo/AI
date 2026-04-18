@@ -4,29 +4,29 @@ parse_estimates.py — 견적서 이미지를 Claude Vision API로 파싱
 실행 (실시간):
     python parse_estimates.py [--reparse] [--id ARTICLE_ID]
 
-실행 (배치 — 50% 비용 절감):
-    python parse_estimates.py --batch-submit [--reparse] [--id ARTICLE_ID]
-    python parse_estimates.py --batch-apply
-    python parse_estimates.py --batch-status
+배치 모드 (50% 비용 절감):
+    python parse_estimates.py --batch-submit   # 배치 제출
+    python parse_estimates.py --batch-status   # 진행 상황 확인
+    python parse_estimates.py --batch-apply    # 결과 적용
 
 동작:
     - estimate_data/{지역}/{article_id}/ 폴더 순회 (지역별 구조 지원)
-    - 이미지 파일을 Claude Vision API(claude-sonnet-4-6)로 파싱
+    - 이미지 파일을 Claude Vision API로 파싱
     - 견적서 항목(라인 아이템, 총액)을 JSON으로 추출
     - 각 폴더의 {article_id}.json에 "parsed_estimate" 필드로 병합
     - 이미 파싱된 항목은 skip (재실행 안전)
 
-환경 변수:
-    ANTHROPIC_API_KEY — Anthropic API 키 필요
+사전 준비:
+    ANTHROPIC_API_KEY 환경변수 설정 (또는 .env 파일)
 """
 
 from __future__ import annotations
 
 import re
 import io
+import base64
 import json
 import time
-import base64
 import pathlib
 from collections import defaultdict
 
@@ -43,8 +43,9 @@ load_dotenv()
 DATA_DIR         = "./estimate_data"
 BATCH_STATE_FILE = "./batch_state.json"
 MODEL            = "claude-sonnet-4-6"
-SLEEP_BETWEEN    = 1.0
-SUPPORTED_EXTS   = {".jpg", ".jpeg", ".png", ".webp"}
+
+SLEEP_BETWEEN  = 1.0
+SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 MEDIA_TYPE_MAP = {
     ".jpg":  "image/jpeg",
