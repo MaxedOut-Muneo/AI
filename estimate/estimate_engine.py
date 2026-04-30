@@ -322,9 +322,14 @@ _SKIP_KEYWORDS = ["식대", "주차", "통행료"]
 # 방 개수별 마루·장판 면적 보정계수 (3개방 기준 1.0)
 방_마루_비율: dict[int, float] = {1: 0.70, 2: 0.85, 3: 1.00, 4: 1.15}
 
+import sys
+import os
 import chromadb
 from chromadb.utils import embedding_functions
 from chroma_client import get_chroma_client
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from db import get_sync_collection
 
 # ══════════════════════════════════════════════════════
 # EstimateEngine
@@ -341,22 +346,7 @@ class EstimateEngine:
             name=COLLECTION_NAME,
             embedding_function=ef,
         )
-        self._id_index = self._build_id_index()
-
-    def _build_id_index(self):
-        """estimate_data 디렉터리를 스캔해 article_id → JSON 경로 인덱스 생성."""
-        index: dict[str, pathlib.Path] = {}
-        base = pathlib.Path(__file__).parent / "estimate_data"
-        for json_path in base.rglob("*.json"):
-            try:
-                raw = json.loads(json_path.read_text(encoding="utf-8"))
-                data = raw[0] if isinstance(raw, list) else raw
-                aid = data.get("article_id")
-                if aid:
-                    index[str(aid)] = json_path
-            except Exception:
-                pass
-        return index
+        self._cases_col = get_sync_collection("estimate_cases")
 
     @staticmethod
     def _normalize_desc(category: str, desc: str):
@@ -397,35 +387,39 @@ class EstimateEngine:
         if not target_categories:
             return {}
 
-        # article_id → JSON 로드 후 line_items 집계
+        # MongoDB에서 article_id 배치 조회 후 line_items 집계
         # amounts[category][normalized_desc] = [amount, ...]
         amounts = defaultdict(lambda: defaultdict(list))
 
+        article_ids = [str(c.get("article_id", "")) for c in cases if c.get("article_id")]
+        docs = {
+            str(d["article_id"]): d
+            for d in self._cases_col.find(
+                {"article_id": {"$in": article_ids}},
+                {"parsed_estimate": 1, "article_id": 1, "_id": 0},
+            )
+        }
+
         for case in cases:
             aid = str(case.get("article_id", ""))
-            json_path = self._id_index.get(aid)
-            if not json_path:
+            data = docs.get(aid)
+            if not data:
                 continue
-            try:
-                raw = json.loads(json_path.read_text(encoding="utf-8"))
-                data = raw[0] if isinstance(raw, list) else raw
-                pe = data.get("parsed_estimate")
-                if not pe:
+            pe = data.get("parsed_estimate")
+            if not pe:
+                continue
+            for item in pe.get("line_items", []):
+                cat = item.get("category", "")
+                if cat not in target_categories:
                     continue
-                for item in pe.get("line_items", []):
-                    cat = item.get("category", "")
-                    if cat not in target_categories:
-                        continue
-                    amt = int(item.get("amount") or 0)
-                    if amt <= 0:
-                        continue
-                    desc = item.get("description", "")
-                    normalized = self._normalize_desc(cat, desc)
-                    if normalized is None:
-                        continue
-                    amounts[cat][normalized].append(amt)
-            except Exception:
-                pass
+                amt = int(item.get("amount") or 0)
+                if amt <= 0:
+                    continue
+                desc = item.get("description", "")
+                normalized = self._normalize_desc(cat, desc)
+                if normalized is None:
+                    continue
+                amounts[cat][normalized].append(amt)
 
         # 공종별로 집계 결과 생성
         result = {}
