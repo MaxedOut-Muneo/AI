@@ -1,37 +1,52 @@
-def search_estimate_cases_for_reference(question: str):
+from db import get_sync_collection_from_db
+
+
+def search_estimate_cases_for_reference(question: str) -> str:
     """
-    견적서 사례는 가격 산정 목적이 아니라,
-    견적서 양식/포함 항목/누락 가능 항목 참고용으로 사용한다.
-
-    동료의 estimate_engine.py 함수명이 다를 수 있으므로
-    여러 함수명을 순서대로 시도한다.
+    견적서 사례를 MongoDB에서 직접 조회해서
+    '견적서에 자주 포함되는 항목' 등을 추출하는 함수
     """
 
-    try:
-        import estimate.estimate_engine as engine
-    except Exception as e:
-        return f"견적 사례 엔진을 불러오지 못했습니다: {e}"
+    col = get_sync_collection_from_db("estimate_db", "estimate_cases")
 
-    candidate_function_names = [
-        "search_estimate_cases",
-        "generate_estimate",
-        "run_estimate_engine",
-        "estimate_engine",
-        "main"
-    ]
+    # parsed_estimate가 있는 데이터 일부만 가져오기
+    docs = list(col.find(
+        {"parsed_estimate": {"$exists": True}},
+        {"parsed_estimate.line_items": 1}
+    ).limit(30))
 
-    for name in candidate_function_names:
-        fn = getattr(engine, name, None)
+    if not docs:
+        return "견적서 사례 데이터가 없습니다."
 
-        if callable(fn):
-            try:
-                return fn(question)
-            except TypeError:
+    category_count = {}
+    sample_items = []
+
+    for doc in docs:
+        parsed = doc.get("parsed_estimate", {})
+        items = parsed.get("line_items", [])
+
+        for item in items:
+            category = item.get("category") or item.get("description", "")
+
+            if not category:
                 continue
-            except Exception as e:
-                return f"견적 사례 검색 중 오류가 발생했습니다: {e}"
 
-    return (
-        "estimate/estimate_engine.py에서 호출 가능한 함수를 찾지 못했습니다. "
-        "search_estimate_cases(question) 형태의 함수를 만들어 연결하는 것을 권장합니다."
-    )
+            category_count[category] = category_count.get(category, 0) + 1
+
+            if len(sample_items) < 10:
+                sample_items.append(category)
+
+    # 많이 등장한 항목 상위 7개
+    top_items = sorted(category_count.items(), key=lambda x: x[1], reverse=True)[:7]
+
+    result = "견적서 사례에서 자주 포함되는 항목:\n"
+
+    for name, count in top_items:
+        result += f"- {name}\n"
+
+    if sample_items:
+        result += "\n예시 항목:\n"
+        for item in sample_items[:5]:
+            result += f"- {item}\n"
+
+    return result
