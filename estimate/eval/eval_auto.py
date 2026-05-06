@@ -21,7 +21,7 @@ import json
 import pathlib
 from collections import Counter
 
-DATA_DIR              = "./estimate_data"
+DATA_DIR              = str(pathlib.Path(__file__).parent.parent / "estimate_data")
 CONSISTENCY_TOLERANCE = 0.20  # ±20% 이내면 일치
 DUPLICATE_THRESHOLD   = 1.30  # 항목합계가 총금액의 1.3배 이상이면 중복 의심
 
