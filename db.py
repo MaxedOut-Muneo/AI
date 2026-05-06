@@ -30,3 +30,11 @@ def get_sync_client() -> MongoClient:
 
 def get_sync_collection(name: str):
     return get_sync_client()["estimate_db"][name]
+
+
+def get_collection_from_db(db_name: str, collection_name: str):
+    return get_client()[db_name][collection_name]
+
+
+def get_sync_collection_from_db(db_name: str, collection_name: str):
+    return get_sync_client()[db_name][collection_name]
