@@ -33,7 +33,7 @@ from chroma_client import get_chroma_client
 
 COLLECTION_NAME  = "estimates"
 EMBED_MODEL      = "paraphrase-multilingual-MiniLM-L12-v2"
-TESTSET_FILE     = "./eval_data/rag_testset.json"
+TESTSET_FILE     = str(pathlib.Path(__file__).parent.parent / "docs" / "eval_data" / "rag_testset.json")
 DEFAULT_TOP_K    = 5
 
 # 관련성 판정 기준

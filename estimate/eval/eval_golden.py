@@ -25,9 +25,11 @@ import json
 import pathlib
 import argparse
 from collections import defaultdict
+from typing import Optional
 
-GOLDEN_FILE = "./eval_data/golden_vision.json"
-DATA_DIR    = "./estimate_data"
+_HERE       = pathlib.Path(__file__).parent
+GOLDEN_FILE = str(_HERE.parent / "docs" / "eval_data" / "golden_vision.json")
+DATA_DIR    = str(_HERE.parent / "estimate_data")
 
 COST_ERROR_TARGET     = 5.0   # 총금액 오차율 목표 (%)
 CATEGORY_ERROR_TARGET = 10.0  # 카테고리 소계 오차율 목표 (%)
@@ -47,7 +49,7 @@ def load_golden(path: str) -> list[dict]:
     return [d for d in data if d.get("article_id")]
 
 
-def find_json(data_root: pathlib.Path, article_id: str) -> pathlib.Path | None:
+def find_json(data_root: pathlib.Path, article_id: str) -> Optional[pathlib.Path]:
     for region_dir in data_root.iterdir():
         if not region_dir.is_dir():
             continue
@@ -159,7 +161,7 @@ def match_categories(golden_cats: dict[str, int],
 # 건별 평가
 # ══════════════════════════════════════════════════════
 
-def evaluate_one(golden: dict, data_root: pathlib.Path, verbose: bool) -> dict | None:
+def evaluate_one(golden: dict, data_root: pathlib.Path, verbose: bool) -> Optional[dict]:
     aid = golden["article_id"]
     json_path = find_json(data_root, aid)
 

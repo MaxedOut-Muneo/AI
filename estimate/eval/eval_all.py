@@ -31,10 +31,11 @@ from collections import defaultdict
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 # ── 경로 설정 ──────────────────────────────────────────
-DATA_DIR     = "./estimate_data"
-GOLDEN_FILE  = "./eval_data/golden_vision.json"
-TESTSET_FILE = "./eval_data/rag_testset.json"
-RESULTS_DIR  = "./eval_results"
+_HERE        = pathlib.Path(__file__).parent
+DATA_DIR     = str(_HERE.parent / "estimate_data")
+GOLDEN_FILE  = str(_HERE.parent / "docs" / "eval_data" / "golden_vision.json")
+TESTSET_FILE = str(_HERE.parent / "docs" / "eval_data" / "rag_testset.json")
+RESULTS_DIR  = str(_HERE / "eval_results")
 
 EMBED_MODEL     = "paraphrase-multilingual-MiniLM-L12-v2"
 COLLECTION_NAME = "estimates"
