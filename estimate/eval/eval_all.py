@@ -323,14 +323,14 @@ def run_phase3(top_k: int = 5) -> dict:
         return {"status": "skipped", "reason": f"ChromaDB 연결 실패: {e}",
                 "metrics": {}, "goals": {}}
 
-    from eval_rag import is_relevant
+    from eval_rag import is_relevant, build_filter, query_with_fallback
 
     hits            = 0
     rrs             = []
     size_deviations = []
-    fallback_1      = 0  # 전체 필터 성공
-    fallback_2      = 0  # 2차 폴백
-    fallback_3      = 0  # 3차 폴백 (필터 없음)
+    fallback_1      = 0
+    fallback_2      = 0
+    fallback_3      = 0
 
     for q in test_queries:
         article_id = q["메타"]["article_id"]
@@ -339,12 +339,11 @@ def run_phase3(top_k: int = 5) -> dict:
         q_data = collection.get(ids=[article_id], include=["metadatas"])
         q_meta = q_data["metadatas"][0] if q_data["metadatas"] else q["메타"]
 
-        # top_k+1 검색 후 자기 자신 제외
-        n = min(top_k + 1, collection.count())
-        results  = collection.query(query_texts=[q["query"]], n_results=n,
-                                    include=["metadatas"])
-        ret_meta = [m for m in results["metadatas"][0]
-                    if m.get("article_id") != article_id][:top_k]
+        # 지역+평수 필터 적용 후 임베딩 유사도 순위로 검색 (폴백 포함)
+        n     = min(top_k + 1, collection.count())
+        where = build_filter(q_meta)
+        raw   = query_with_fallback(collection, q["query"], n, where)
+        ret_meta = [m for m in raw if m.get("article_id") != article_id][:top_k]
 
         # 관련성 기반 Hit / MRR
         relevant_flags = [is_relevant(q_meta, m) for m in ret_meta]

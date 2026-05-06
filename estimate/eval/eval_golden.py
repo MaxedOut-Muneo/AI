@@ -35,6 +35,15 @@ COST_ERROR_TARGET     = 5.0   # 총금액 오차율 목표 (%)
 CATEGORY_ERROR_TARGET = 10.0  # 카테고리 소계 오차율 목표 (%)
 AMOUNT_MATCH_TOLERANCE = 0.10  # 금액 기준 매칭 허용 오차 (3단계)
 
+# 골든셋 카테고리 → 파싱 결과 별칭 (파싱이 다른 이름으로 출력하는 경우)
+# 4단계 매칭에서 사용 — 이미 매칭된 파싱 항목 재사용 허용
+CATEGORY_ALIASES: dict[str, list[str]] = {
+    "도어공사":    ["창호공사", "ABS도어공사"],
+    "확장공사":    ["발코니공사", "발코니확장공사"],
+    "세내수복공사": ["수복공사", "보수공사", "기타공사"],
+    "현관문공사":  ["창호공사"],
+}
+
 
 # ══════════════════════════════════════════════════════
 # 데이터 로드
@@ -143,6 +152,23 @@ def match_categories(golden_cats: dict[str, int],
                 "missing":      False,
             }
             used_parsed.add(best_name)
+
+    # ── 4단계: 별칭(alias) 매칭 ────────────────────────
+    # 파싱이 다른 카테고리명을 쓰는 경우 (도어공사 → 창호공사 등)
+    # 이미 매칭된 파싱 항목도 재사용 허용 (합산된 금액으로 비교)
+    for g_name, g_amt in golden_cats.items():
+        if g_name in result:
+            continue
+        aliases = CATEGORY_ALIASES.get(g_name, [])
+        for alias in aliases:
+            if alias in parsed_cats:
+                result[g_name] = {
+                    "parsed_key":   alias,
+                    "parsed_amt":   parsed_cats[alias],
+                    "match_stage":  4,
+                    "missing":      False,
+                }
+                break
 
     # ── 매칭 실패 → 누락 ───────────────────────────────
     for g_name in golden_cats:

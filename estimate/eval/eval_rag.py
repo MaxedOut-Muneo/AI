@@ -39,21 +39,32 @@ DEFAULT_TOP_K    = 5
 # 관련성 판정 기준
 WORK_TYPES       = ["has_창호", "has_도배", "has_타일", "has_가구",
                     "has_욕실", "has_바닥", "has_전기", "has_조명"]
-SIZE_RANGE       = 7   # 평수 허용 오차 (±평)
+SIZE_RANGE       = 10  # 평수 허용 오차 (±평) — 기존 7에서 완화
 MIN_WORK_OVERLAP = 2   # 최소 공종 겹침 수
+
+# 수도권 묶음 — 서울/경기/인천은 동일 권역으로 간주
+REGION_GROUP = {
+    "서울": "수도권",
+    "경기": "수도권",
+    "인천": "수도권",
+}
 
 
 def is_relevant(q_meta: dict, r_meta: dict) -> bool:
     """쿼리와 검색 결과가 관련 사례인지 판정.
 
     조건 (모두 충족):
-      1. 동일 지역
+      1. 동일 권역 (서울/경기/인천 → 수도권으로 묶음, 지방은 동일 지역)
       2. 평수 ±SIZE_RANGE 이내
       3. 공종 MIN_WORK_OVERLAP개 이상 겹침
          (쿼리 공종이 2개 미만이면 겹침 조건 완화)
     """
-    # 동일 지역
-    if q_meta.get("region") != r_meta.get("region"):
+    # 권역 비교 (수도권 내 서울↔경기↔인천 허용)
+    q_region = q_meta.get("region", "")
+    r_region = r_meta.get("region", "")
+    q_group  = REGION_GROUP.get(q_region, q_region)
+    r_group  = REGION_GROUP.get(r_region, r_region)
+    if q_group != r_group:
         return False
 
     # 평수 범위
@@ -69,6 +80,58 @@ def is_relevant(q_meta: dict, r_meta: dict) -> bool:
     if threshold == 0:
         return True
     return len(q_works & r_works) >= threshold
+
+
+# 수도권 지역 묶음 (필터용)
+REGION_GROUP_MAP = {
+    "서울": ["서울", "경기", "인천"],
+    "경기": ["서울", "경기", "인천"],
+    "인천": ["서울", "경기", "인천"],
+}
+
+
+def build_filter(q_meta: dict):
+    """estimate_engine과 동일하게 지역+평수 메타데이터 필터 생성.
+    결과가 부족하면 None(필터 없음)으로 폴백.
+    """
+    conditions = []
+
+    # 지역 (수도권 묶음)
+    region = q_meta.get("region", "")
+    region_list = REGION_GROUP_MAP.get(region, [region] if region else [])
+    if len(region_list) == 1:
+        conditions.append({"region": {"$eq": region_list[0]}})
+    elif len(region_list) > 1:
+        conditions.append({"region": {"$in": region_list}})
+
+    # 평수 범위
+    size = int(q_meta.get("size_pyeong") or 0)
+    if size:
+        conditions.append({"size_pyeong": {"$gte": size - SIZE_RANGE}})
+        conditions.append({"size_pyeong": {"$lte": size + SIZE_RANGE}})
+
+    if not conditions:
+        return None
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
+
+
+def query_with_fallback(collection, query_text: str, n: int, where) -> list[dict]:
+    """필터 적용 검색 → 결과 부족 시 필터 제거 후 재검색."""
+    def _query(w=None):
+        kw = dict(query_texts=[query_text], n_results=n, include=["metadatas"])
+        if w:
+            kw["where"] = w
+        return collection.query(**kw)["metadatas"][0]
+
+    try:
+        results = _query(where)
+        if len(results) >= 3:
+            return results
+    except Exception:
+        pass
+    return _query(None)
 
 
 def evaluate(test_queries: list[dict], top_k: int) -> dict:
@@ -88,14 +151,13 @@ def evaluate(test_queries: list[dict], top_k: int) -> dict:
         q_data = collection.get(ids=[article_id], include=["metadatas"])
         q_meta = q_data["metadatas"][0] if q_data["metadatas"] else q["메타"]
 
-        # top_k+1 검색 후 자기 자신 제외
-        results = collection.query(
-            query_texts=[q["query"]],
-            n_results=min(top_k + 1, collection.count()),
-            include=["metadatas"],
+        # 지역+평수 필터 적용 후 임베딩 유사도 순위로 검색 (폴백 포함)
+        where = build_filter(q_meta)
+        raw_results = query_with_fallback(
+            collection, q["query"], min(top_k + 1, collection.count()), where
         )
         returned_meta = [
-            m for m in results["metadatas"][0]
+            m for m in raw_results
             if m.get("article_id") != article_id
         ][:top_k]
 
