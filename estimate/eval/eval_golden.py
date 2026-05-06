@@ -25,13 +25,24 @@ import json
 import pathlib
 import argparse
 from collections import defaultdict
+from typing import Optional
 
-GOLDEN_FILE = "./eval_data/golden_vision.json"
-DATA_DIR    = "./estimate_data"
+_HERE       = pathlib.Path(__file__).parent
+GOLDEN_FILE = str(_HERE.parent / "docs" / "eval_data" / "golden_vision.json")
+DATA_DIR    = str(_HERE.parent / "estimate_data")
 
 COST_ERROR_TARGET     = 5.0   # 총금액 오차율 목표 (%)
 CATEGORY_ERROR_TARGET = 10.0  # 카테고리 소계 오차율 목표 (%)
 AMOUNT_MATCH_TOLERANCE = 0.10  # 금액 기준 매칭 허용 오차 (3단계)
+
+# 골든셋 카테고리 → 파싱 결과 별칭 (파싱이 다른 이름으로 출력하는 경우)
+# 4단계 매칭에서 사용 — 이미 매칭된 파싱 항목 재사용 허용
+CATEGORY_ALIASES: dict[str, list[str]] = {
+    "도어공사":    ["창호공사", "ABS도어공사"],
+    "확장공사":    ["발코니공사", "발코니확장공사"],
+    "세내수복공사": ["수복공사", "보수공사", "기타공사"],
+    "현관문공사":  ["창호공사"],
+}
 
 
 # ══════════════════════════════════════════════════════
@@ -47,7 +58,7 @@ def load_golden(path: str) -> list[dict]:
     return [d for d in data if d.get("article_id")]
 
 
-def find_json(data_root: pathlib.Path, article_id: str) -> pathlib.Path | None:
+def find_json(data_root: pathlib.Path, article_id: str) -> Optional[pathlib.Path]:
     for region_dir in data_root.iterdir():
         if not region_dir.is_dir():
             continue
@@ -142,6 +153,23 @@ def match_categories(golden_cats: dict[str, int],
             }
             used_parsed.add(best_name)
 
+    # ── 4단계: 별칭(alias) 매칭 ────────────────────────
+    # 파싱이 다른 카테고리명을 쓰는 경우 (도어공사 → 창호공사 등)
+    # 이미 매칭된 파싱 항목도 재사용 허용 (합산된 금액으로 비교)
+    for g_name, g_amt in golden_cats.items():
+        if g_name in result:
+            continue
+        aliases = CATEGORY_ALIASES.get(g_name, [])
+        for alias in aliases:
+            if alias in parsed_cats:
+                result[g_name] = {
+                    "parsed_key":   alias,
+                    "parsed_amt":   parsed_cats[alias],
+                    "match_stage":  4,
+                    "missing":      False,
+                }
+                break
+
     # ── 매칭 실패 → 누락 ───────────────────────────────
     for g_name in golden_cats:
         if g_name not in result:
@@ -159,7 +187,7 @@ def match_categories(golden_cats: dict[str, int],
 # 건별 평가
 # ══════════════════════════════════════════════════════
 
-def evaluate_one(golden: dict, data_root: pathlib.Path, verbose: bool) -> dict | None:
+def evaluate_one(golden: dict, data_root: pathlib.Path, verbose: bool) -> Optional[dict]:
     aid = golden["article_id"]
     json_path = find_json(data_root, aid)
 
