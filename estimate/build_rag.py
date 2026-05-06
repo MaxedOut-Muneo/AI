@@ -65,11 +65,32 @@ def check_has_keywords(text: str) -> dict[str, str]:
     }
 
 
+_HAS_TO_WORK = {
+    "has_창호": "창호", "has_도배": "도배", "has_타일": "타일",
+    "has_가구": "가구", "has_욕실": "욕실", "has_바닥": "바닥",
+    "has_전기": "전기", "has_조명": "조명",
+}
+
+
 def build_document(data: dict) -> str:
-    """임베딩 대상 텍스트 구성."""
-    size = data.get("size_pyeong", "?")
+    """임베딩 대상 텍스트 구성. 지역·공종 정보를 명시적으로 포함."""
+    size         = data.get("size_pyeong", "?")
+    region       = data.get("region", "")
     request_text = (data.get("request_body_text") or "").strip()
-    return f"{size}평\n요청공사: {request_text}"
+
+    check_text = build_check_text(data)
+    has_fields = check_has_keywords(check_text)
+    works      = [name for key, name in _HAS_TO_WORK.items() if has_fields.get(key) == "true"]
+
+    header = " ".join(filter(None, [
+        f"{size}평",
+        region,
+        " ".join(works),
+        "리모델링",
+    ]))
+    if request_text:
+        return f"{header}\n요청공사: {request_text}"
+    return header
 
 
 # 정규화 카테고리 → DB cost_* 키 매핑
