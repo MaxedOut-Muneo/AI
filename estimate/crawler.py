@@ -278,12 +278,31 @@ def get_request_body(driver, request_url):
     고객이 작성한 견적의뢰글 원문 텍스트 수집
     반환: str
     """
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
+
     driver.get(request_url)
+
+    # 삭제된 게시글 등 alert 팝업 처리
+    try:
+        WebDriverWait(driver, 3).until(EC.alert_is_present())
+        driver.switch_to.alert.accept()
+        return ""
+    except Exception:
+        pass
 
     if not enter_iframe(driver):
         return ""
 
-    soup = BeautifulSoup(driver.page_source, "html.parser")
+    try:
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+    except UnexpectedAlertPresentException:
+        try:
+            driver.switch_to.alert.accept()
+        except NoAlertPresentException:
+            pass
+        return ""
     body_el = (
         soup.select_one(".se-main-container") or
         soup.select_one(".ContentRenderer") or
@@ -554,6 +573,6 @@ def crawl_user(member_hash: str, max_pages: int = MAX_PAGES, max_articles: int =
 
 if __name__ == "__main__":
     # 여기에 수집할 유저의 member_hash 입력
-    MEMBER_HASH = "8iguRecJOShN7SyhI-Tr6TeSsriOaimUbmWflCPWbLQ"
+    MEMBER_HASH = "CGUcEN20XRZl8bWyApIj-A"
 
-    crawl_user(MEMBER_HASH, max_pages=MAX_PAGES, max_articles=80)
+    crawl_user(MEMBER_HASH, max_pages=MAX_PAGES, max_articles=50)

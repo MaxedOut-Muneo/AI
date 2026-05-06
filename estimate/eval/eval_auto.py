@@ -21,7 +21,7 @@ import json
 import pathlib
 from collections import Counter
 
-DATA_DIR              = "./estimate_data"
+DATA_DIR              = str(pathlib.Path(__file__).parent.parent / "estimate_data")
 CONSISTENCY_TOLERANCE = 0.20  # ±20% 이내면 일치
 DUPLICATE_THRESHOLD   = 1.30  # 항목합계가 총금액의 1.3배 이상이면 중복 의심
 
@@ -186,6 +186,8 @@ def main():
                         help="특정 article_id만 검사 (예: --id 877555)")
     parser.add_argument("--show-all", action="store_true",
                         help="불일치 목록 전체 출력")
+    parser.add_argument("--show-missing", action="store_true",
+                        help="미파싱 article 목록 출력")
     args = parser.parse_args()
 
     data_root = pathlib.Path(DATA_DIR)
@@ -208,6 +210,11 @@ def main():
     cov = check_coverage(records)
     for k, v in cov.items():
         print(f"  {k}: {v}")
+    if args.show_missing:
+        missing = [r for r in records if not r.get("parsed_estimate")]
+        print(f"\n  [미파싱 목록] ({len(missing)}건)")
+        for r in missing:
+            print(f"    {r.get('region', '?')}/{r.get('article_id', '?')}")
 
     # ② size_pyeong
     print_section("② size_pyeong 미추출률")
