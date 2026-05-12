@@ -281,7 +281,7 @@ _SKIP_KEYWORDS = ["식대", "주차", "통행료"]
 철거_평당 = {"있음": 25000, "없음": 0, "모름": 12000}
 
 # 양중비 (엘리베이터 없을 때만 층수 × 계수)
-양중_층당 = 30000   # 원/층
+양중_층당 = 150000  # 원/층 (사다리차 중간단가 30만 × 2~3회 / 5층 기준)
 
 # 트럭 접근 불가 시 운반비 할증 보정계수
 트럭_FACTOR: dict[str, float] = {
@@ -292,6 +292,12 @@ _SKIP_KEYWORDS = ["식대", "주차", "통행료"]
 
 # 마감/공과잡비: DB cost 키 없음 → 총 공사비의 일정 비율로 산정
 마감_비율 = 0.03    # 3% (보양·TV방수·엘리베이터보양·항균관리 등 포함)
+
+# 전체 리모델링 버퍼 (total_costs 기반 경로)
+# cost_* 합산은 실제 총금액의 약 69%만 커버 → total_costs를 직접 사용
+# actual이 견적서보다 10~20% 높은 케이스를 최댓값 버퍼로 커버
+전체_버퍼_LO = 1.00   # 최솟값: total_costs 그대로
+전체_버퍼_HI = 1.30   # 최댓값: actual > 견적서 총금액 케이스 커버 (10~20% 갭 + 여유)
 
 # 전체 리모델링 기본 공정 목록 (시공범위="전체" 시 자동 포함 기준)
 전체_기본공정 = [
@@ -524,10 +530,45 @@ class EstimateEngine:
             return conditions[0]
         return {"$and": conditions}
 
-    # ── 3. ChromaDB 조회 (필터 실패 시 자동 완화) ─────────
+    # ── 3. ChromaDB 조회 (점진적 필터 완화) ──────────────────
 
-    def retrieve_cases(self, query: str, filters):
-        n = min(TOP_K, self.collection.count())
+    def _build_filter(self, 평수: int, 지역들: list, 공종들: list,
+                      use_size=True, use_region=True, use_has=True):
+        """세 그룹(평수/지역/has_*) 조합으로 ChromaDB 필터 생성."""
+        conds = []
+        if use_size and 평수:
+            conds.append({"size_pyeong": {"$gte": 평수 - SIZE_RANGE}})
+            conds.append({"size_pyeong": {"$lte": 평수 + SIZE_RANGE}})
+        if use_region and 지역들:
+            if len(지역들) == 1:
+                conds.append({"region": {"$eq": 지역들[0]}})
+            else:
+                conds.append({"region": {"$in": 지역들}})
+        if use_has:
+            seen = set()
+            for 공종 in 공종들:
+                flag = 공종_TO_HAS.get(공종)
+                if flag and flag not in seen:
+                    conds.append({flag: {"$eq": "true"}})
+                    seen.add(flag)
+        if not conds:
+            return None
+        if len(conds) == 1:
+            return conds[0]
+        return {"$and": conds}
+
+    def retrieve_cases(self, query: str, inp: dict):
+        """
+        점진적 폴백으로 유사 사례 검색.
+          Stage 1: 평수 + 지역 + has_*  (전체 조건)
+          Stage 2: 평수 + 지역          (공종 조건 완화)
+          Stage 3: 평수만               (지역 조건 완화)
+          Stage 4: 필터 없음            (최후 수단)
+        """
+        n       = min(TOP_K, self.collection.count())
+        평수    = int(inp.get("평수") or 0)
+        지역들  = REGION_MAP.get(inp.get("지역", "서울"), ["서울"])
+        공종들  = inp.get("공종", [])
 
         def _query(where=None):
             kw = dict(query_texts=[query], n_results=n, include=["metadatas"])
@@ -535,25 +576,23 @@ class EstimateEngine:
                 kw["where"] = where
             return self.collection.query(**kw)["metadatas"][0]
 
-        try:
-            cases = _query(filters)
-            if len(cases) >= 3:
-                return cases
-        except Exception:
-            pass
+        for use_size, use_region, use_has in [
+            (True,  True,  True),   # Stage 1: 전체 조건
+            (True,  False, True),   # Stage 2: 평수+has_* (지역 완화 → 전국 동일 평수)
+            (False, False, True),   # Stage 3: has_*만 (OLD 방식 — 공종 구성 유지)
+            (False, False, False),  # Stage 4: 필터 없음
+        ]:
+            where = self._build_filter(평수, 지역들, 공종들,
+                                       use_size=use_size,
+                                       use_region=use_region,
+                                       use_has=use_has)
+            try:
+                cases = _query(where)
+                if len(cases) >= 3:
+                    return cases
+            except Exception:
+                pass
 
-        # 공종 필터만 유지 (평수·지역 완화)
-        공종들 = [inp for inp in (filters or {}).get("$and", [])
-                  if list(inp.keys())[0].startswith("has_")]
-        try:
-            relaxed = {"$and": 공종들} if len(공종들) > 1 else (공종들[0] if 공종들 else None)
-            cases = _query(relaxed)
-            if cases:
-                return cases
-        except Exception:
-            pass
-
-        # 필터 완전 제거
         return _query(None)
 
     # ── 4. 사례에서 비용 추출 ────────────────────────────
@@ -609,10 +648,7 @@ class EstimateEngine:
             label = "성수기 할증" if f > 1.0 else "비수기 할인"
             notes.append(f"{label} ({f-1:+.1%})")
 
-        f = 지역_FACTOR.get(inp.get("지역", "서울"), 1.0)
-        if f != 1.0:
-            factor *= f
-            notes.append(f"지역 인건비 {inp.get('지역')} ({f-1:+.0%})")
+        # 지역 계수 미적용: RAG 필터가 이미 같은 지역 사례를 가져오므로 이중 적용 방지
 
         # 트럭 접근 불가 할증
         f = 트럭_FACTOR.get(inp.get("트럭접근", "가능"), 1.0)
@@ -627,11 +663,14 @@ class EstimateEngine:
             양중 = 층수 * 양중_층당
             notes.append(f"사다리차 양중비 +{양중:,}원 ({층수}층)")
 
-        # 철거 추가비 (DB 사례에 이미 반영됐을 수 있으나 보수적으로 추가)
+        # 철거 추가비: "철거"가 공종 목록에 있으면 RAG에서 직접 추출하므로 flat-rate 미적용
         평수 = int(inp.get("평수") or 0)
-        철거추가 = 철거_평당.get(inp.get("철거여부", "모름"), 0) * 평수
-        if 철거추가:
-            notes.append(f"철거비 보정 +{철거추가:,}원")
+        if "철거" not in inp.get("공종", []):
+            철거추가 = 철거_평당.get(inp.get("철거여부", "모름"), 0) * 평수
+            if 철거추가:
+                notes.append(f"철거비 보정 +{철거추가:,}원")
+        else:
+            철거추가 = 0
 
         # 마감/공과잡비: 총 공사비의 3% 비율로 나중에 별도 산정
         마감비율_적용 = "마감/공과잡비" in inp.get("공종", [])
@@ -714,13 +753,15 @@ class EstimateEngine:
     # ── 7. 공종별 단가 범위 계산 ─────────────────────────
 
     @staticmethod
-    def cost_range(values):
+    def cost_range(values, top_trim: float = 0.10):
+        """최솟값: 하위 20% 제거 / 최댓값: 상위 top_trim% 제거 (기본 10%)."""
         if not values:
             return None
         trimmed = sorted(values)
         if len(trimmed) > 4:
-            cut = len(trimmed) // 5
-            trimmed = trimmed[cut:-cut]
+            bot = len(trimmed) // 5          # 하위 20% 제거 (저가 이상치 차단)
+            top = max(1, int(len(trimmed) * top_trim))  # 상위 10% 제거 (극단 이상치만)
+            trimmed = trimmed[bot:-top]
         return {
             "최소": min(trimmed),
             "최대": max(trimmed),
@@ -733,8 +774,7 @@ class EstimateEngine:
         공종들     = inp.get("공종", [])
         시공범위   = inp.get("시공범위", "부분")
         query      = self.build_query(inp)
-        filters    = self.build_filters(inp)
-        cases      = self.retrieve_cases(query, filters)
+        cases      = self.retrieve_cases(query, inp)
 
         # 마감/공과잡비는 DB에서 비용 추출 불가 — cost 계산 대상에서 제외
         추출대상_공종들 = [c for c in 공종들 if c != "마감/공과잡비"]
@@ -763,24 +803,35 @@ class EstimateEngine:
                     "최대": int(r["최대"] * factor),
                 }
 
-        # 총 견적 = 공종별 단가 합산 + 추가 비용
-        # (기존 total_cost 기반 방식은 전체 리모델링 비용이 포함돼 과대 산정됨)
-        if 공종별_범위:
+        # 총 견적 범위 계산
+        # 전체 리모델링: total_costs 기반 (cost_* 합산은 실제 총금액의 ~69%만 커버)
+        # 부분 리모델링: cost_* 공종별 합산 (전체 total_cost 쓰면 과대산정)
+        if inp.get("시공범위") == "전체" and total_costs:
+            r = self.cost_range(total_costs)
+            adj_lo = int(r["최소"] * factor) + extra
+            adj_hi = int(r["최대"] * factor) + extra
+            if 마감비율_적용:
+                adj_lo = int(adj_lo * (1 + 마감_비율))
+                adj_hi = int(adj_hi * (1 + 마감_비율))
+            adj_lo = int(adj_lo * 전체_버퍼_LO)
+            adj_hi = int(adj_hi * 전체_버퍼_HI)
+        elif 공종별_범위:
             adj_lo = sum(r["최소"] for r in 공종별_범위.values()) + extra
             adj_hi = sum(r["최대"] for r in 공종별_범위.values()) + extra
+            if 마감비율_적용:
+                adj_lo = int(adj_lo * (1 + 마감_비율))
+                adj_hi = int(adj_hi * (1 + 마감_비율))
         else:
-            # fallback: 공종별 비용 데이터가 없을 때 total_costs 기반
+            # fallback: 공종별 비용 데이터도 없을 때
             trimmed = sorted(total_costs)
             if len(trimmed) > 4:
                 cut = len(trimmed) // 5
                 trimmed = trimmed[cut:-cut]
             adj_lo = int(min(trimmed) * factor) + extra
             adj_hi = int(max(trimmed) * factor) + extra
-
-        # 마감/공과잡비: 보정 후 총 공사비의 3% 추가
-        if 마감비율_적용:
-            adj_lo = int(adj_lo * (1 + 마감_비율))
-            adj_hi = int(adj_hi * (1 + 마감_비율))
+            if 마감비율_적용:
+                adj_lo = int(adj_lo * (1 + 마감_비율))
+                adj_hi = int(adj_hi * (1 + 마감_비율))
 
         adj_mid = (adj_lo + adj_hi) // 2
 
@@ -866,6 +917,17 @@ def fmt(n: int) -> str:
 
 
 def main():
+    # .env 자동 로드 (현재 폴더 → 상위 폴더 순으로 탐색)
+    try:
+        from dotenv import load_dotenv
+        _here = pathlib.Path(__file__).parent
+        for _p in [_here / ".env", _here.parent / ".env"]:
+            if _p.exists():
+                load_dotenv(dotenv_path=_p)
+                break
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, default=None,
                         help="user_input JSON 파일 경로 (없으면 샘플 입력 사용)")

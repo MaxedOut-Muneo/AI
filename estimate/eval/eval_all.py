@@ -417,18 +417,42 @@ def run_phase3(top_k: int = 5) -> dict:
 def run_phase4() -> dict:
     sep("PHASE 4 — 가견적 정확도")
 
-    estimate_testset = pathlib.Path("./eval_data/estimate_testset.json")
+    estimate_testset = _HERE.parent / "docs" / "eval_data" / "estimate_testset.json"
     if not estimate_testset.exists():
-        print("  [NOT IMPLEMENTED] 가견적 평가 로직 미완성")
-        print("  → 가견적 계산 로직 완성 후 eval_estimate.py 구현 예정")
-        print("  → 구현 완료 시 이 함수에 자동 연결됩니다")
-        return {"status": "not_implemented", "metrics": {}, "goals": {}}
+        print("  [SKIP] estimate_testset.json 없음")
+        print("  → python eval/build_estimate_testset.py 실행 필요")
+        return {"status": "skipped", "reason": "estimate_testset.json 없음",
+                "metrics": {}, "goals": {}}
 
-    # 구현 완료 후 여기에 eval_estimate.py 로직 연결
-    # from eval_estimate import run_estimate_eval
-    # return run_estimate_eval()
-    print("  [NOT IMPLEMENTED] estimate_testset.json 존재하지만 평가 로직 미연결")
-    return {"status": "not_implemented", "metrics": {}, "goals": {}}
+    try:
+        from eval_estimate import run_estimate_eval
+    except ImportError as e:
+        return {"status": "skipped", "reason": f"import 실패: {e}",
+                "metrics": {}, "goals": {}}
+
+    result = run_estimate_eval()
+
+    if result["status"] != "ok":
+        print(f"  [{result['status'].upper()}] {result.get('reason', '')}")
+        return result
+
+    metrics       = result["metrics"]
+    goals         = result["goals"]
+    coverage_rate = metrics["coverage_rate"]
+    mape          = metrics.get("mape_%")
+
+    print(f"  테스트셋:    {metrics['testset_count']}건  "
+          f"(유효 {metrics['valid_count']}건 / 오류 {metrics['error_count']}건)")
+    print(f"  범위 포함률: {coverage_rate:.1%}  "
+          f"({metrics['in_range_count']}/{metrics['valid_count']})  (목표 ≥ 70%)")
+    if mape is not None:
+        print(f"  MAPE:        {mape:.1f}%  (목표 ≤ 20%)")
+    print()
+    for label, ok in goals.items():
+        mark = "✅" if ok else "❌"
+        print(f"  {mark} {label}")
+
+    return {k: v for k, v in result.items() if k != "detail"}
 
 
 # ══════════════════════════════════════════════════════
@@ -509,6 +533,8 @@ def show_history():
         (f"Hit@5",               ("phase3", "metrics", "hit_at_5")),
         ("MRR",                  ("phase3", "metrics", "mrr")),
         ("평균 평수 편차(평)",    ("phase3", "metrics", "avg_size_dev")),
+        ("범위 포함률",           ("phase4", "metrics", "coverage_rate")),
+        ("MAPE(%)",              ("phase4", "metrics", "mape_%")),
     ]
 
     dates = [h.get("timestamp", "?")[:10] for h in history]
