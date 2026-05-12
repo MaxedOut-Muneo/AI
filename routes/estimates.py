@@ -1,13 +1,13 @@
-from datetime import datetime, timezone
 from typing import Optional
+
 from fastapi import APIRouter, Body, Header, HTTPException
-from bson import ObjectId
-from db import get_collection
+
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "estimate"))
 from estimate_engine import EstimateEngine
+from estimate_service import save_estimate, list_estimates, delete_estimate
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -54,11 +54,6 @@ def get_engine() -> EstimateEngine:
     return _engine
 
 
-def serialize(doc: dict) -> dict:
-    doc["id"] = str(doc.pop("_id"))
-    return doc
-
-
 @router.post("/generate")
 async def generate(body: dict = Body(example=_SAMPLE_INPUT)):
     result = get_engine().generate(body)
@@ -77,32 +72,22 @@ async def save(
     if not user_input or not result:
         raise HTTPException(status_code=400, detail="input과 result가 필요합니다.")
 
-    doc = {
-        "user_id": x_user_id,
-        "created_at": datetime.now(timezone.utc),
-        "input": user_input,
-        "result": result,
-    }
-    res = await get_collection("estimates").insert_one(doc)
-    return {"id": str(res.inserted_id)}
+    estimate_id = await save_estimate(x_user_id, user_input, result)
+    return {"id": estimate_id}
 
 
 @router.get("")
-async def list_estimates(x_user_id: str = Header(..., example="user_abc123")):
-    col = get_collection("estimates")
-    cursor = col.find({"user_id": x_user_id}, {"참고_사례": 0, "참고_사례_수": 0, "검색_쿼리": 0})
-    docs = await cursor.to_list(length=100)
-    return [serialize(d) for d in docs]
+async def get_estimates(x_user_id: str = Header(..., example="user_abc123")):
+    return await list_estimates(x_user_id)
 
 
 @router.delete("/{estimate_id}", status_code=204)
-async def delete_estimate(estimate_id: str = "6801234567890abcdef12345", x_user_id: str = Header(..., example="user_abc123")):
-    try:
-        oid = ObjectId(estimate_id)
-    except Exception:
+async def remove_estimate(
+    estimate_id: str = "6801234567890abcdef12345",
+    x_user_id: str = Header(..., example="user_abc123"),
+):
+    result = await delete_estimate(estimate_id, x_user_id)
+    if result is None:
         raise HTTPException(status_code=400, detail="유효하지 않은 ID입니다.")
-
-    col = get_collection("estimates")
-    res = await col.delete_one({"_id": oid, "user_id": x_user_id})
-    if res.deleted_count == 0:
+    if not result:
         raise HTTPException(status_code=404, detail="견적을 찾을 수 없습니다.")
