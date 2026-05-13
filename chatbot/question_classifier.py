@@ -36,8 +36,8 @@ def classify_question(question: str) -> dict:
     )
 
     return {
+        "is_interior": is_interior,
         "use_estimate_cases": use_estimate_cases,
         "use_legal_docs": use_legal_docs,
-        "use_defect_docs": use_defect_docs,
-        "is_interior": is_interior
+        "use_defect_docs": use_defect_docs
     }
