@@ -1,25 +1,30 @@
 import os
 import re
-from dotenv import load_dotenv
-from anthropic import Anthropic
+from typing import Any
 
-from chatbot.question_classifier import classify_question
-from chatbot.legal_rag_search import search_legal_docs
+from dotenv import load_dotenv
+
 from chatbot.estimate_adapter import search_estimate_cases_for_reference
+from chatbot.legal_rag_search import search_legal_docs
+from chatbot.question_classifier import classify_question
+from chatbot.schemas import ChatResponse, ChatSource, ChatUsed
 
 load_dotenv()
 
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+NON_INTERIOR_GUIDE_MESSAGE = (
+    "이 챗봇은 인테리어 견적서, 계약, 하자, 시공 관련 상담을 돕는 용도입니다. "
+    "인테리어 관련 질문을 입력해 주세요."
+)
 
 
-def format_legal_docs(docs: list) -> str:
+def format_legal_docs(docs: list[dict[str, Any]]) -> str:
     if not docs:
         return "검색된 계약/하자 기준 자료 없음"
 
     lines = []
 
     for idx, doc in enumerate(docs, start=1):
-        meta = doc["metadata"]
+        meta = doc.get("metadata", {})
 
         lines.append(
             f"[근거 {idx}]\n"
@@ -27,13 +32,13 @@ def format_legal_docs(docs: list) -> str:
             f"유형: {meta.get('source_type')}\n"
             f"항목: {meta.get('article_no')} {meta.get('section')}\n"
             f"하자분류: {meta.get('defect_category', '')}\n"
-            f"내용:\n{doc['document']}"
+            f"내용:\n{doc.get('document', '')}"
         )
 
     return "\n\n".join(lines)
 
 
-def build_prompt(question: str, flags: dict, estimate_context: str, legal_context: str) -> str:
+def build_prompt(question: str, flags: dict[str, bool], estimate_context: str, legal_context: str) -> str:
     return f"""
 너는 인테리어 견적서 검토, 계약 체크, 하자 상담을 도와주는 챗봇이다.
 
@@ -60,79 +65,94 @@ def build_prompt(question: str, flags: dict, estimate_context: str, legal_contex
 {legal_context}
 
 [답변 형식]
-- 핵심 답변
-- 참고한 기준 또는 사례
-- 확인해야 할 항목
-- 주의사항
+핵심 답변
+참고한 기준 또는 사례
+확인해야 할 항목
+주의사항
 """.strip()
 
 def clean_answer(text: str) -> str:
-        # Markdown 제거
-        text = re.sub(r"#.*\n", "", text)        # 제목 제거
-        text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)  # ** 제거
-        text = re.sub(r"- ", "", text)          # 리스트 제거
-        text = re.sub(r"\n{2,}", "\n", text)    # 줄바꿈 정리
-        text = text.strip()
-    
-        return text
+    text = re.sub(r"#.*\n", "", text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"^-\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
 
-def generate_chat_answer(question: str) -> dict:
-    flags = classify_question(question)
 
-    if not flags["is_interior"]:
-        return {
-            "answer": "이 챗봇은 인테리어 견적서, 계약, 하자, 시공 관련 상담을 돕는 용도입니다. 인테리어 관련 질문을 입력해 주세요.",
-            "used": flags,
-            "sources": []
-        }
+class ChatbotService:
+    def __init__(self, anthropic_client: Any | None = None, model: str | None = None):
+        self._client = anthropic_client
+        self._model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
-    estimate_context = "견적서 사례 검색 사용 안 함"
-    legal_docs = []
+    @property
+    def client(self) -> Any:
+        if self._client is None:
+            from anthropic import Anthropic
 
-    if flags["use_estimate_cases"]:
-        estimate_context = search_estimate_cases_for_reference(question)
+            self._client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        return self._client
 
-    if flags["use_legal_docs"] or flags["use_defect_docs"]:
-        legal_docs = search_legal_docs(question, top_k=4)
+    def chat(self, question: str) -> ChatResponse:
+        flags = classify_question(question)
+        used = ChatUsed(**flags)
 
-    legal_context = format_legal_docs(legal_docs)
+        if not used.is_interior:
+            return ChatResponse(
+                answer=NON_INTERIOR_GUIDE_MESSAGE,
+                used=used,
+                sources=[],
+            )
 
-    prompt = build_prompt(
-        question=question,
-        flags=flags,
-        estimate_context=str(estimate_context),
-        legal_context=legal_context
-    )
+        estimate_context = "견적서 사례 검색 사용 안 함"
+        legal_docs: list[dict[str, Any]] = []
 
-    response = client.messages.create(
-        model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-        max_tokens=1200,
-        temperature=0.2,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
+        if used.use_estimate_cases:
+            estimate_context = search_estimate_cases_for_reference(question)
 
-    answer = response.content[0].text
-    
-    answer = clean_answer(answer)
+        if used.use_legal_docs or used.use_defect_docs:
+            legal_docs = search_legal_docs(question, top_k=4)
 
-    return {
-        "answer": answer,
-        "used": flags,
-        "sources": [
-            {
-                "title": doc["metadata"].get("title"),
-                "source_type": doc["metadata"].get("source_type"),
-                "article_no": doc["metadata"].get("article_no"),
-                "section": doc["metadata"].get("section"),
-                "defect_category": doc["metadata"].get("defect_category"),
-                "page": doc["metadata"].get("page"),
-                "distance": doc.get("distance")
-            }
-            for doc in legal_docs
-        ]
-    }
+        prompt = build_prompt(
+            question=question,
+            flags=flags,
+            estimate_context=estimate_context,
+            legal_context=format_legal_docs(legal_docs),
+        )
+
+        response = self.client.messages.create(
+            model=self._model,
+            max_tokens=1200,
+            temperature=0.2,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        return ChatResponse(
+            answer=clean_answer(response.content[0].text),
+            used=used,
+            sources=self._build_sources(legal_docs),
+        )
+
+    @staticmethod
+    def _build_sources(legal_docs: list[dict[str, Any]]) -> list[ChatSource]:
+        sources = []
+        for doc in legal_docs:
+            metadata = doc.get("metadata", {})
+            sources.append(
+                ChatSource(
+                    title=metadata.get("title"),
+                    source_type=metadata.get("source_type"),
+                    article_no=metadata.get("article_no"),
+                    section=metadata.get("section"),
+                    defect_category=metadata.get("defect_category"),
+                    page=metadata.get("page"),
+                    distance=doc.get("distance"),
+                )
+            )
+        return sources
+
+
+_default_service = ChatbotService()
+
+
+def generate_chat_answer(question: str) -> dict[str, Any]:
+    return _default_service.chat(question).model_dump()

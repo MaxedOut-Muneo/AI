@@ -18,3 +18,12 @@ uvicorn[standard]>=0.30.0
 # MongoDB
 motor>=3.5.0
 pymongo>=4.7.0
+
+# LLM 클라이언트
+anthropic>=0.40.0
+
+# 파일 업로드/Form 요청 처리
+python-multipart>=0.0.9
+
+# 이미지 처리
+Pillow>=10.0.0
