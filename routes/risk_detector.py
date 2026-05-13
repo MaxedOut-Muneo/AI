@@ -1,12 +1,13 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from risk_detector.dto import AnalyzeRiskCommand, AnalyzeRiskResponse
 from risk_detector.service import RiskDetectorService
 
 router = APIRouter(prefix="/risk-detector", tags=["risk-detector"])
 service = RiskDetectorService()
 
 
-@router.post("/analyze")
+@router.post("/analyze", response_model=AnalyzeRiskResponse)
 async def analyze_risk(
     space_type: str = Form(..., description="아파트|빌라|오피스텔|단독주택"),
     pyeong: int = Form(..., description="면적(평)"),
@@ -20,17 +21,18 @@ async def analyze_risk(
 ):
     try:
         image_bytes = [await f.read() for f in files]
-        return service.analyze(
+        command = AnalyzeRiskCommand(
             space_type=space_type,
-            image_files=image_bytes,
-            company_name=company_name,
             pyeong=pyeong,
             room_count=room_count,
             floor=floor,
             elevator=elevator,
             region=region,
             building_age=building_age,
+            company_name=company_name,
+            image_files=image_bytes,
         )
+        return service.analyze(command)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:

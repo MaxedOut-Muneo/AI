@@ -4,9 +4,20 @@ MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 MAX_VISION_TOKENS = 16384
 
 SUPPORTED_SPACE_TYPES = ["아파트", "빌라", "오피스텔", "단독주택"]
-SUPPORTED_PROCESSES = ["철거", "설비", "전기/조명", "목공", "도배", "바닥", "타일", "욕실", "주방", "도장", "가구"]
-PROCESS_DISPLAY_NAME = {p: f"{p} 공사" for p in SUPPORTED_PROCESSES}
-PROCESS_DISPLAY_NAME["전기/조명"] = "전기/조명 공사"
+SUPPORTED_PROCESSES = [
+    "철거",
+    "설비",
+    "전기/조명",
+    "목공",
+    "도배",
+    "바닥",
+    "타일",
+    "욕실",
+    "주방",
+    "도장",
+    "가구",
+]
+PROCESS_DISPLAY_NAME = {p: p for p in SUPPORTED_PROCESSES}
 
 PROCESS_CATEGORY_MAP = {
     "철거": ["철거공사"],
