@@ -44,6 +44,23 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Validate required secrets
+        env:
+          SPRING_EC2_HOST: ${{ secrets.SPRING_EC2_HOST }}
+          SPRING_EC2_KEY: ${{ secrets.SPRING_EC2_KEY }}
+          AI_PRIVATE_IP: ${{ secrets.AI_PRIVATE_IP }}
+          AI_EC2_KEY: ${{ secrets.AI_EC2_KEY }}
+          AI_HOST_PORT: ${{ secrets.AI_HOST_PORT }}
+          AI_ENV_FILE: ${{ secrets.AI_ENV_FILE }}
+        run: |
+          set -euo pipefail
+          for name in SPRING_EC2_HOST SPRING_EC2_KEY AI_PRIVATE_IP AI_EC2_KEY AI_HOST_PORT AI_ENV_FILE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret: ${name}"
+              exit 1
+            fi
+          done
+
       - name: Build and push AI image
         uses: docker/build-push-action@v6
         with:
