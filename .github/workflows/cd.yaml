@@ -48,13 +48,13 @@ jobs:
         env:
           SPRING_EC2_HOST: ${{ secrets.SPRING_EC2_HOST }}
           SPRING_EC2_KEY: ${{ secrets.SPRING_EC2_KEY }}
-          AI_PRIVATE_IP: ${{ secrets.AI_PRIVATE_IP }}
-          AI_EC2_KEY: ${{ secrets.AI_EC2_KEY }}
-          AI_HOST_PORT: ${{ secrets.AI_HOST_PORT }}
-          AI_ENV_FILE: ${{ secrets.AI_ENV_FILE }}
+          FASTAPI_PRIVATE_IP: ${{ secrets.FASTAPI_PRIVATE_IP }}
+          FASTAPI_EC2_KEY: ${{ secrets.FASTAPI_EC2_KEY }}
+          FASTAPI_HOST_PORT: ${{ secrets.FASTAPI_HOST_PORT }}
+          FASTAPI_ENV_FILE: ${{ secrets.FASTAPI_ENV_FILE }}
         run: |
           set -euo pipefail
-          for name in SPRING_EC2_HOST SPRING_EC2_KEY AI_PRIVATE_IP AI_EC2_KEY AI_HOST_PORT AI_ENV_FILE; do
+          for name in SPRING_EC2_HOST SPRING_EC2_KEY FASTAPI_PRIVATE_IP FASTAPI_EC2_KEY FASTAPI_HOST_PORT FASTAPI_ENV_FILE; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing required secret: ${name}"
               exit 1
@@ -80,7 +80,7 @@ jobs:
           mkdir -p ~/.ssh
 
           echo "${{ secrets.SPRING_EC2_KEY }}" > ~/.ssh/spring_key
-          echo "${{ secrets.AI_EC2_KEY }}" > ~/.ssh/ai_key
+          echo "${{ secrets.FASTAPI_EC2_KEY }}" > ~/.ssh/ai_key
 
           chmod 600 ~/.ssh/spring_key ~/.ssh/ai_key
 
@@ -92,7 +92,7 @@ jobs:
             StrictHostKeyChecking accept-new
 
           Host ai
-            HostName ${{ secrets.AI_PRIVATE_IP }}
+            HostName ${{ secrets.FASTAPI_PRIVATE_IP }}
             User ubuntu
             IdentityFile ~/.ssh/ai_key
             ProxyJump spring
@@ -102,8 +102,8 @@ jobs:
       - name: Deploy AI
         env:
           IMAGE_TAG: ${{ github.sha }}
-          HOST_PORT: ${{ secrets.AI_HOST_PORT }}
-          AI_ENV_FILE: ${{ secrets.AI_ENV_FILE }}
+          HOST_PORT: ${{ secrets.FASTAPI_HOST_PORT }}
+          AI_ENV_FILE: ${{ secrets.FASTAPI_ENV_FILE }}
         run: |
           ssh ai "IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' HOST_PORT='${HOST_PORT:-8000}' AI_ENV_FILE='${AI_ENV_FILE}' bash -s" <<'EOF'
           set -euo pipefail
