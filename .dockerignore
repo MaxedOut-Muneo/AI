@@ -1,0 +1,24 @@
+.git
+.github
+.idea
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.DS_Store
+
+# Local env/config
+.env
+
+# Python cache/build
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Node (if present)
+node_modules/
