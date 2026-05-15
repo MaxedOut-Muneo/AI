@@ -1,0 +1,107 @@
+name: Deploy AI
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ai-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: dykkim/muneo-ai
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push AI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Setup SSH config
+        run: |
+          mkdir -p ~/.ssh
+
+          echo "${{ secrets.SPRING_EC2_KEY }}" > ~/.ssh/spring_key
+          echo "${{ secrets.AI_EC2_KEY }}" > ~/.ssh/ai_key
+
+          chmod 600 ~/.ssh/spring_key ~/.ssh/ai_key
+
+          cat > ~/.ssh/config <<EOF
+          Host spring
+            HostName ${{ secrets.SPRING_EC2_HOST }}
+            User ubuntu
+            IdentityFile ~/.ssh/spring_key
+            StrictHostKeyChecking accept-new
+
+          Host ai
+            HostName ${{ secrets.AI_PRIVATE_IP }}
+            User ubuntu
+            IdentityFile ~/.ssh/ai_key
+            ProxyJump spring
+            StrictHostKeyChecking accept-new
+          EOF
+
+      - name: Deploy AI
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          HOST_PORT: ${{ secrets.AI_HOST_PORT }}
+          AI_ENV_FILE: ${{ secrets.AI_ENV_FILE }}
+        run: |
+          ssh ai "IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' HOST_PORT='${HOST_PORT:-8000}' AI_ENV_FILE='${AI_ENV_FILE}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+          CONTAINER_NAME="muneo-ai"
+          APP_PORT="8000"
+          APP_DIR="/home/ubuntu/muneo-ai"
+          ENV_FILE="/home/ubuntu/muneo-ai/.env"
+
+          if docker info >/dev/null 2>&1; then
+            DOCKER="docker"
+          else
+            DOCKER="sudo docker"
+          fi
+
+          mkdir -p "${APP_DIR}"
+          printf "%s" "${AI_ENV_FILE}" > "${ENV_FILE}"
+          chmod 600 "${ENV_FILE}"
+
+          ${DOCKER} pull "${IMAGE}"
+          ${DOCKER} rm -f "${CONTAINER_NAME}" || true
+          ${DOCKER} run -d \
+            --name "${CONTAINER_NAME}" \
+            --restart unless-stopped \
+            -p "${HOST_PORT}:${APP_PORT}" \
+            --env-file "${ENV_FILE}" \
+            "${IMAGE}"
+
+          ${DOCKER} ps --filter "name=${CONTAINER_NAME}" --filter "status=running" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"
+          ${DOCKER} image prune -f --filter "until=72h"
+          EOF
