@@ -738,8 +738,11 @@ class EstimateEngine:
         else:
             철거추가 = 0
 
-        # 마감/공과잡비: 총 공사비의 3% 비율로 나중에 별도 산정
-        마감비율_적용 = "마감/공과잡비" in inp.get("공종", [])
+        # 마감/공과잡비: 전체 시공이거나 명시 선택 시 항상 적용
+        마감비율_적용 = (
+            "마감/공과잡비" in inp.get("공종", []) or
+            inp.get("시공범위") == "전체"
+        )
         if 마감비율_적용:
             notes.append(f"마감/공과잡비 포함 (총 공사비의 {마감_비율:.0%})")
 
@@ -836,8 +839,11 @@ class EstimateEngine:
 
     # ── 7. 최종 가견적 생성 ──────────────────────────────
 
+    # DB cost_설비 데이터 부재로 지원 불가 — 입력에 포함되어도 무시
+    _UNSUPPORTED_공종 = {"설비"}
+
     def generate(self, inp: dict) -> dict:
-        공종들     = inp.get("공종", [])
+        공종들     = [c for c in inp.get("공종", []) if c not in self._UNSUPPORTED_공종]
         시공범위   = inp.get("시공범위", "부분")
         query      = self.build_query(inp)
         cases      = self.retrieve_cases(query, inp)
@@ -878,11 +884,15 @@ class EstimateEngine:
         # 총 견적 범위 계산
         # 전체 리모델링: total_costs 기반 (cost_* 합산은 실제 총금액의 ~69%만 커버)
         # 부분 리모델링: cost_* 공종별 합산 (전체 total_cost 쓰면 과대산정)
+        마감_lo = 마감_hi = 0  # 마감/공과잡비 단가범위 (마감비율_적용 시 설정)
+
         if inp.get("시공범위") == "전체" and total_costs:
             r = self.cost_range(total_costs)
             adj_lo = int(r["최소"] * factor) + extra
             adj_hi = int(r["최대"] * factor) + extra
             if 마감비율_적용:
+                마감_lo = int(adj_lo * 마감_비율)
+                마감_hi = int(adj_hi * 마감_비율)
                 adj_lo = int(adj_lo * (1 + 마감_비율))
                 adj_hi = int(adj_hi * (1 + 마감_비율))
             adj_lo = int(adj_lo * 전체_버퍼_LO)
@@ -891,6 +901,8 @@ class EstimateEngine:
             adj_lo = sum(r["최소"] for r in 공종별_범위.values()) + extra
             adj_hi = sum(r["최대"] for r in 공종별_범위.values()) + extra
             if 마감비율_적용:
+                마감_lo = int(adj_lo * 마감_비율)
+                마감_hi = int(adj_hi * 마감_비율)
                 adj_lo = int(adj_lo * (1 + 마감_비율))
                 adj_hi = int(adj_hi * (1 + 마감_비율))
         else:
@@ -902,6 +914,8 @@ class EstimateEngine:
             adj_lo = int(min(trimmed) * factor) + extra
             adj_hi = int(max(trimmed) * factor) + extra
             if 마감비율_적용:
+                마감_lo = int(adj_lo * 마감_비율)
+                마감_hi = int(adj_hi * 마감_비율)
                 adj_lo = int(adj_lo * (1 + 마감_비율))
                 adj_hi = int(adj_hi * (1 + 마감_비율))
 
@@ -926,6 +940,47 @@ class EstimateEngine:
         # 공종별 항목 명세 (line_items 집계) — 마감/공과잡비 제외
         공종별_항목_명세 = self.collect_line_items(cases, 추출대상_공종들)
 
+        # 마감/공과잡비: DB 미지원 → 총 견적 기반 비율 산정 + 고정 단가 명세
+        if 마감비율_적용 and 마감_hi > 0:
+            공종별_범위["마감/공과잡비"] = {
+                "최소": 마감_lo,
+                "중간": (마감_lo + 마감_hi) // 2,
+                "최대": 마감_hi,
+            }
+            평수 = int(inp.get("평수") or 30)
+            철거포함 = "철거" in 공종들
+            엘베있음 = inp.get("엘리베이터") != "없음"
+
+            마감_spec = [
+                {"description": "현장보양",
+                 "amount_range": {"최소": 평수 * 3_000, "중간": 평수 * 5_000, "최대": 평수 * 7_000},
+                 "등장_사례_수": None},
+                {"description": "입주청소",
+                 "amount_range": {"최소": 평수 * 7_000, "중간": 평수 * 10_000, "최대": 평수 * 13_000},
+                 "등장_사례_수": None},
+                {"description": "실리콘마감",
+                 "amount_range": {"최소": 80_000, "중간": 115_000, "최대": 150_000},
+                 "등장_사례_수": None},
+            ]
+            if 엘베있음:
+                마감_spec.insert(1, {
+                    "description": "엘리베이터보양",
+                    "amount_range": {"최소": 80_000, "중간": 115_000, "최대": 150_000},
+                    "등장_사례_수": None,
+                })
+            if not 철거포함:
+                마감_spec.append({
+                    "description": "폐기물처리",
+                    "amount_range": {"최소": 200_000, "중간": 350_000, "최대": 500_000},
+                    "등장_사례_수": None,
+                })
+            공종별_항목_명세["마감/공과잡비"] = 마감_spec
+
+        # 마감/공과잡비가 자동 적용됐으나 선택_공종에 없으면 추가
+        출력_공종들 = list(공종들)
+        if 마감비율_적용 and "마감/공과잡비" not in 출력_공종들:
+            출력_공종들.append("마감/공과잡비")
+
         output = {
             "총_견적_범위": {
                 "최소": adj_lo,
@@ -936,7 +991,7 @@ class EstimateEngine:
             "공종별_항목_명세": 공종별_항목_명세,
             "보정_적용":    notes,
             "시공범위":     시공범위,
-            "선택_공종":    공종들,
+            "선택_공종":    출력_공종들,
             "참고_사례_수": len(total_costs),
             "참고_사례":    참고_사례,
             "검색_쿼리":    query,
