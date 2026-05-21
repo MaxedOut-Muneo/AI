@@ -1,5 +1,5 @@
 """
-eval_estimate.py — 가견적 정확도 평가
+eval_estimate.py - 가견적 정확도 평가
 
 실행:
     python eval_estimate.py
@@ -105,7 +105,7 @@ def run_estimate_eval() -> dict:
     if not TESTSET_FILE.exists():
         return {
             "status":  "skipped",
-            "reason":  "estimate_testset.json 없음 — build_estimate_testset.py --apply 먼저 실행",
+            "reason":  "estimate_testset.json 없음 - build_estimate_testset.py --apply 먼저 실행",
             "metrics": {},
             "goals":   {},
         }
@@ -173,14 +173,14 @@ def main():
         print(f"  → python build_estimate_testset.py --apply 로 hold-out 먼저 실행")
         print(f"  leakage 대상: {leaked[:5]}{'...' if len(leaked) > 5 else ''}")
         return
-    print("leakage 없음 — 정상 평가 가능\n")
+    print("leakage 없음 - 정상 평가 가능\n")
 
     result        = evaluate(testset)
     coverage_rate = result["coverage_rate"]
     mape          = result["mape_%"]
 
     print("=" * 55)
-    print("  PHASE 4 — 가견적 정확도 평가 결과")
+    print("  PHASE 4 - 가견적 정확도 평가 결과")
     print("=" * 55)
     print(f"  테스트셋:    {result['testset_count']}건  "
           f"(유효 {result['valid_count']}건 / 오류 {result['error_count']}건)")
@@ -189,22 +189,21 @@ def main():
     if mape is not None:
         print(f"  MAPE:        {mape:.1f}%  (목표 ≤ 20%)")
     print()
-    print(f"  {'✅' if coverage_rate >= 0.70 else '❌'} coverage_rate ≥ 0.70")
+    print(f"  {'[OK]' if coverage_rate >= 0.70 else '[NO]'} coverage_rate >= 0.70")
     if mape is not None:
-        print(f"  {'✅' if mape <= 20.0 else '❌'} MAPE ≤ 20%")
+        print(f"  {'[OK]' if mape <= 20.0 else '[NO]'} MAPE <= 20%")
 
     misses = [d for d in result["detail"] if "in_range" in d and not d["in_range"]]
     if misses:
         print(f"\n  [범위 밖 사례] {len(misses)}건")
-        for d in misses[:5]:
+        for d in misses:
             lo  = d["estimate"]["최소"] // 10000
             mid = d["estimate"]["중간"] // 10000
             hi  = d["estimate"]["최대"] // 10000
             act = d["actual"] // 10000
+            direction = "실제>최대" if d["actual"] > d["estimate"]["최대"] else "실제<최소"
             print(f"    {d['article_id']}: 실제 {act}만 | "
-                  f"추정 {lo}~{hi}만 (중간 {mid}만) | 오차 {d['ape_%']}%")
-        if len(misses) > 5:
-            print(f"    ... 외 {len(misses) - 5}건")
+                  f"추정 {lo}~{hi}만 (중간 {mid}만) | {direction} | 오차 {d['ape_%']}%")
 
     print(f"\n평가 완료 후 복원: python build_estimate_testset.py --restore")
     print()

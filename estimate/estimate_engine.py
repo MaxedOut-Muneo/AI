@@ -39,7 +39,9 @@ user_input 구조:
 
 import json
 import argparse
+import math
 import pathlib
+import re
 import statistics
 from collections import defaultdict
 
@@ -49,8 +51,14 @@ from collections import defaultdict
 
 COLLECTION_NAME = "estimates"
 EMBED_MODEL     = "paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K           = 15   # 유사 사례 최대 조회 수
-SIZE_RANGE      = 7    # 평수 ±7평 필터
+TOP_K              = 15   # 유사 사례 최대 조회 수
+SIZE_RANGE         = 7    # 평수 ±7평 필터
+MAX_SPEC_ITEMS     = 12   # 공종별 명세 최대 항목 수 (ancillary 제외)
+SPEC_RATIO         = 0.15 # 비정규화 항목 등장 비율 threshold (전체 사례 수 × 비율)
+SCOPE_COVERAGE_MIN = 0.40 # 요청 공종 비용 합계 / 사례 총 비용 최소 비율 (전체 시공용)
+
+# 치수 표기 기호(×/✕/*/+) 정규화: "540*540" → "540×540"
+_DIM_SEP_RE = re.compile(r'(\d+)[×✕\*\+](\d+)')
 
 # 사용자 지역 → DB region 매핑
 REGION_MAP = {
@@ -299,7 +307,7 @@ _SKIP_KEYWORDS = ["식대", "주차", "통행료"]
 # cost_* 합산은 실제 총금액의 약 69%만 커버 → total_costs를 직접 사용
 # actual이 견적서보다 10~20% 높은 케이스를 최댓값 버퍼로 커버
 전체_버퍼_LO = 1.00   # 최솟값: total_costs 그대로
-전체_버퍼_HI = 1.30   # 최댓값: actual > 견적서 총금액 케이스 커버 (10~20% 갭 + 여유)
+전체_버퍼_HI = 1.25   # 최댓값: 25% 안전마진
 
 # 전체 리모델링 기본 공정 목록 (시공범위="전체" 시 자동 포함 기준)
 전체_기본공정 = [
@@ -374,6 +382,33 @@ class EstimateEngine:
                 return normalized, (normalized is not None)
         return desc, False  # 매핑 없으면 원본 유지, 비정규화 표시
 
+    @staticmethod
+    def _normalize_spec_desc(desc: str) -> str:
+        """치수 구분 기호(×/✕/*/+)를 × 로 통일해 중복 항목 방지."""
+        return _DIM_SEP_RE.sub(r'\1×\2', desc)
+
+    @staticmethod
+    def _filter_by_scope_coverage(cases: list[dict], 공종들: list[str],
+                                   min_ratio: float = SCOPE_COVERAGE_MIN) -> list[dict]:
+        """요청 공종 비용 합계 / 사례 총 비용 비율이 낮은 케이스 제거.
+
+        전체 시공에서 참고 사례가 요청 공종 외 다수 공종을 포함해
+        total_cost가 과대 산정되는 문제를 방지한다.
+        """
+        def _coverage(case: dict) -> float:
+            tc = int(case.get("total_cost") or 0)
+            if tc <= 0:
+                return 0.0
+            trade_sum = sum(
+                int(case.get(k) or 0)
+                for g in 공종들
+                for k in 공종_TO_COST.get(g, [])
+            )
+            return trade_sum / tc
+
+        filtered = [c for c in cases if _coverage(c) >= min_ratio]
+        return filtered if len(filtered) >= 3 else cases
+
     def collect_line_items(self, cases, 공종들):
         """유사 사례 JSON에서 공종별 line_items를 집계해 명세 반환.
 
@@ -426,7 +461,7 @@ class EstimateEngine:
                 amt = int(item.get("amount") or 0)
                 if amt <= 0:
                     continue
-                desc = item.get("description", "")
+                desc = self._normalize_spec_desc(item.get("description", ""))
                 normalized, was_norm = self._normalize_desc(cat, desc)
                 if normalized is None:
                     continue
@@ -448,10 +483,13 @@ class EstimateEngine:
                         continue
                     merged[(desc, was_norm)].extend(amt_list)
 
+            # 비율 기반 threshold: 전체 사례 수의 SPEC_RATIO 이상 등장해야 포함
+            ratio_min = max(2, math.ceil(len(cases) * SPEC_RATIO))
+
             items_for_공종: list[dict] = []
             for (desc, was_norm), amt_list in merged.items():
-                # NORM_MAP 매핑 항목: 1건도 허용 / 비매핑 raw 항목: 2건 이상만
-                min_cases = 1 if was_norm else 2
+                # NORM_MAP 매핑 항목: 2건 이상 / 비매핑 raw 항목: 비율 기반 threshold
+                min_cases = 2 if was_norm else ratio_min
                 if len(amt_list) < min_cases:
                     continue
                 trimmed = sorted(amt_list)
@@ -468,11 +506,17 @@ class EstimateEngine:
                     "등장_사례_수": len(amt_list),
                 })
 
-            # 등장 사례 수 내림차순 정렬, 식대·운송비 등 부대비용은 하단으로
+            # 등장 사례 수 내림차순 정렬, 부대비용은 하단으로
             ancillary = {"인건비", "운송비", "부자재"}
             items_for_공종.sort(
                 key=lambda x: (x["description"] in ancillary, -x["등장_사례_수"])
             )
+
+            # 공종별 명세 항목 수 cap: 비부대비용 MAX_SPEC_ITEMS개 + 부대비용 전체
+            non_anc = [x for x in items_for_공종 if x["description"] not in ancillary]
+            anc     = [x for x in items_for_공종 if x["description"] in ancillary]
+            items_for_공종 = non_anc[:MAX_SPEC_ITEMS] + anc
+
             if items_for_공종:
                 result[공종] = items_for_공종
 
@@ -775,14 +819,14 @@ class EstimateEngine:
     # ── 7. 공종별 단가 범위 계산 ─────────────────────────
 
     @staticmethod
-    def cost_range(values, top_trim: float = 0.10):
-        """최솟값: 하위 20% 제거 / 최댓값: 상위 top_trim% 제거 (기본 10%)."""
+    def cost_range(values, top_trim: float = 0.12):
+        """최솟값: 하위 20% 제거 / 최댓값: 상위 12% 제거."""
         if not values:
             return None
         trimmed = sorted(values)
         if len(trimmed) > 4:
-            bot = len(trimmed) // 5          # 하위 20% 제거 (저가 이상치 차단)
-            top = max(1, int(len(trimmed) * top_trim))  # 상위 10% 제거 (극단 이상치만)
+            bot = len(trimmed) // 5          # 하위 20% 제거
+            top = max(1, int(len(trimmed) * top_trim))  # 상위 12% 제거
             trimmed = trimmed[bot:-top]
         return {
             "최소": min(trimmed),
@@ -800,6 +844,12 @@ class EstimateEngine:
 
         # 마감/공과잡비는 DB에서 비용 추출 불가 — cost 계산 대상에서 제외
         추출대상_공종들 = [c for c in 공종들 if c != "마감/공과잡비"]
+
+        # 전체 시공: 요청 공종과 비슷한 공종 구성의 케이스만 사용
+        # (범위가 넓은 케이스가 total_cost를 과대 산정하는 문제 방지)
+        if 시공범위 == "전체":
+            cases = self._filter_by_scope_coverage(cases, 추출대상_공종들)
+
         total_costs, cat_costs = self.extract_costs(cases, 추출대상_공종들)
 
         if not total_costs:
