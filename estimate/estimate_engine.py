@@ -104,6 +104,7 @@ REGION_MAP = {
     "목공":       ["목공사", "목공"],
     "도장":       ["도장공사"],
     "설비":       ["설비공사", "수전/위생공사"],
+    "철거":       ["철거공사"],
     "창호":       ["창호공사"],
     "필름":       ["필름공사"],
 }
@@ -262,7 +263,8 @@ NORM_MAP = {
 _SKIP_KEYWORDS = ["식대", "주차", "통행료"]
 
 # ── 조정 계수 ──────────────────────────────────────────
-자재_FACTOR = {"일반": 0.85, "중급": 1.0, "고급": 1.25}
+자재_FACTOR      = {"일반": 0.85, "중급": 1.0, "고급": 1.25}
+자재등급_TO_GRADE = {"일반": "일반", "중급": "중급", "고급": "고급"}
 연식_FACTOR = {
     "신축(3년이하)": 0.80,
     "10년이하":      0.90,
@@ -355,19 +357,22 @@ class EstimateEngine:
         self._cases_col = get_sync_collection("estimate_cases")
 
     @staticmethod
-    def _normalize_desc(category: str, desc: str):
-        """description을 NORM_MAP 기준으로 대표 이름으로 정규화.
-        _SKIP_KEYWORDS에 해당하면 None 반환 (집계 제외).
-        매핑에 없으면 원본 description 반환.
+    def _normalize_desc(category: str, desc: str) -> tuple:
+        """description을 NORM_MAP 기준으로 정규화.
+
+        반환: (normalized_desc | None, was_normalized: bool)
+          - None: 집계 제외 (skip 키워드 또는 NORM_MAP에서 None으로 지정)
+          - was_normalized=True : NORM_MAP에 매핑됨 → min_cases=1 허용
+          - was_normalized=False: 매핑 없이 원본 반환 → min_cases=2 유지
         """
         for kw in _SKIP_KEYWORDS:
             if kw in desc:
-                return None
+                return None, False
         rules = NORM_MAP.get(category, [])
         for keywords, normalized in rules:
             if any(kw in desc for kw in keywords):
-                return normalized
-        return desc  # 매핑 없으면 원본 유지
+                return normalized, (normalized is not None)
+        return desc, False  # 매핑 없으면 원본 유지, 비정규화 표시
 
     def collect_line_items(self, cases, 공종들):
         """유사 사례 JSON에서 공종별 line_items를 집계해 명세 반환.
@@ -422,10 +427,10 @@ class EstimateEngine:
                 if amt <= 0:
                     continue
                 desc = item.get("description", "")
-                normalized = self._normalize_desc(cat, desc)
+                normalized, was_norm = self._normalize_desc(cat, desc)
                 if normalized is None:
                     continue
-                amounts[cat][normalized].append(amt)
+                amounts[cat][(normalized, was_norm)].append(amt)
 
         # 공종별로 집계 결과 생성
         result = {}
@@ -435,16 +440,19 @@ class EstimateEngine:
 
             # 서브 카테고리(타일공사·수전공사·도기공사 등)를 공종 단위로 합산
             # → 동일 normalized description 중복 방지
-            merged: dict[str, list] = defaultdict(list)
+            # (desc, was_normalized) 키로 병합
+            merged: dict[tuple, list] = defaultdict(list)
             for cat in cats:
-                for desc, amt_list in amounts.get(cat, {}).items():
+                for (desc, was_norm), amt_list in amounts.get(cat, {}).items():
                     if desc in excluded:
                         continue
-                    merged[desc].extend(amt_list)
+                    merged[(desc, was_norm)].extend(amt_list)
 
             items_for_공종: list[dict] = []
-            for desc, amt_list in merged.items():
-                if len(amt_list) < 2:  # 1건만 있는 항목 제외
+            for (desc, was_norm), amt_list in merged.items():
+                # NORM_MAP 매핑 항목: 1건도 허용 / 비매핑 raw 항목: 2건 이상만
+                min_cases = 1 if was_norm else 2
+                if len(amt_list) < min_cases:
                     continue
                 trimmed = sorted(amt_list)
                 if len(trimmed) > 4:
@@ -533,8 +541,12 @@ class EstimateEngine:
     # ── 3. ChromaDB 조회 (점진적 필터 완화) ──────────────────
 
     def _build_filter(self, 평수: int, 지역들: list, 공종들: list,
-                      use_size=True, use_region=True, use_has=True):
-        """세 그룹(평수/지역/has_*) 조합으로 ChromaDB 필터 생성."""
+                      use_size=True, use_region=True, use_has=True,
+                      use_grade=False, grade: str = None):
+        """네 그룹(평수/지역/has_*/자재등급) 조합으로 ChromaDB 필터 생성.
+        ChromaDB Cloud where 조건 한도(8개)를 초과하지 않도록 has_* 슬롯을 동적으로 제한.
+        """
+        MAX_WHERE = 8
         conds = []
         if use_size and 평수:
             conds.append({"size_pyeong": {"$gte": 평수 - SIZE_RANGE}})
@@ -544,9 +556,14 @@ class EstimateEngine:
                 conds.append({"region": {"$eq": 지역들[0]}})
             else:
                 conds.append({"region": {"$in": 지역들}})
+        if use_grade and grade:
+            conds.append({"material_grade": {"$eq": grade}})
         if use_has:
             seen = set()
+            remaining = MAX_WHERE - len(conds)  # 남은 슬롯만큼만 has_* 적용
             for 공종 in 공종들:
+                if len(seen) >= remaining:
+                    break
                 flag = 공종_TO_HAS.get(공종)
                 if flag and flag not in seen:
                     conds.append({flag: {"$eq": "true"}})
@@ -560,15 +577,17 @@ class EstimateEngine:
     def retrieve_cases(self, query: str, inp: dict):
         """
         점진적 폴백으로 유사 사례 검색.
-          Stage 1: 평수 + 지역 + has_*  (전체 조건)
-          Stage 2: 평수 + 지역          (공종 조건 완화)
-          Stage 3: 평수만               (지역 조건 완화)
-          Stage 4: 필터 없음            (최후 수단)
+          Stage 1: 평수 + 지역 + has_* + 자재등급  (전체 조건)
+          Stage 2: 평수 + 지역 + has_*             (등급 완화)
+          Stage 3: 평수 + has_*                    (지역 완화)
+          Stage 4: has_*만                         (평수 완화)
+          Stage 5: 필터 없음                        (최후 수단)
         """
         n       = min(TOP_K, self.collection.count())
         평수    = int(inp.get("평수") or 0)
         지역들  = REGION_MAP.get(inp.get("지역", "서울"), ["서울"])
         공종들  = inp.get("공종", [])
+        grade   = 자재등급_TO_GRADE.get(inp.get("자재등급", "중급"), "중급")
 
         def _query(where=None):
             kw = dict(query_texts=[query], n_results=n, include=["metadatas"])
@@ -576,16 +595,19 @@ class EstimateEngine:
                 kw["where"] = where
             return self.collection.query(**kw)["metadatas"][0]
 
-        for use_size, use_region, use_has in [
-            (True,  True,  True),   # Stage 1: 전체 조건
-            (True,  False, True),   # Stage 2: 평수+has_* (지역 완화 → 전국 동일 평수)
-            (False, False, True),   # Stage 3: has_*만 (OLD 방식 — 공종 구성 유지)
-            (False, False, False),  # Stage 4: 필터 없음
+        for use_size, use_region, use_has, use_grade in [
+            (True,  True,  True,  True),   # Stage 1: 전체 조건 + 등급
+            (True,  True,  True,  False),  # Stage 2: 등급 완화
+            (True,  False, True,  False),  # Stage 3: 지역 완화
+            (False, False, True,  False),  # Stage 4: 평수 완화
+            (False, False, False, False),  # Stage 5: 필터 없음
         ]:
             where = self._build_filter(평수, 지역들, 공종들,
                                        use_size=use_size,
                                        use_region=use_region,
-                                       use_has=use_has)
+                                       use_has=use_has,
+                                       use_grade=use_grade,
+                                       grade=grade)
             try:
                 cases = _query(where)
                 if len(cases) >= 3:
