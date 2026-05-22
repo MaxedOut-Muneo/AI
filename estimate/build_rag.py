@@ -41,6 +41,61 @@ HAS_KEYWORDS: dict[str, list[str]] = {
     "has_조명": ["조명", "다운라이트", "간접등", "LED", "등기구"],
 }
 
+_HAS_FLAGS = list(HAS_KEYWORDS.keys())
+
+
+# ══════════════════════════════════════════════════════
+# 자재등급 추론
+# ══════════════════════════════════════════════════════
+
+def _count_공종(has_fields: dict) -> int:
+    return sum(1 for k in _HAS_FLAGS if has_fields.get(k) == "true")
+
+
+def assign_material_grades(articles: list[dict]) -> dict[str, str]:
+    """공종 수 버킷 내 cost_per_pyeong 3분위 기반 자재등급 추론.
+
+    버킷: 공종 1~3개(소), 4~6개(중), 7+개(대) — 공종 규모를 보정한 뒤
+    버킷 내에서 평당단가 하위 33% → 일반 / 중위 → 중급 / 상위 33% → 고급.
+
+    반환: {article_id: '일반'|'중급'|'고급'}
+    """
+    from collections import defaultdict
+
+    rows = []
+    for a in articles:
+        pe          = a.get("parsed_estimate")
+        if not pe:
+            continue
+        total_cost  = int(pe.get("total_cost") or 0)
+        size_pyeong = int(a.get("size_pyeong") or 0)
+        if total_cost <= 0 or size_pyeong <= 0:
+            continue
+
+        cpp        = total_cost / size_pyeong
+        has_fields = check_has_keywords(build_check_text(a))
+        n공종       = _count_공종(has_fields)
+        bucket     = "소" if n공종 <= 3 else ("중" if n공종 <= 6 else "대")
+        rows.append((str(a.get("article_id", "")), bucket, cpp))
+
+    # 버킷별 33/67 백분위 계산
+    bucket_cpps: dict[str, list] = defaultdict(list)
+    for _, bucket, cpp in rows:
+        bucket_cpps[bucket].append(cpp)
+
+    thresholds: dict[str, tuple] = {}
+    for bucket, cpps in bucket_cpps.items():
+        s  = sorted(cpps)
+        n  = len(s)
+        thresholds[bucket] = (s[n // 3], s[2 * n // 3])
+
+    grades: dict[str, str] = {}
+    for aid, bucket, cpp in rows:
+        lo, hi = thresholds.get(bucket, (0, float("inf")))
+        grades[aid] = "일반" if cpp < lo else ("고급" if cpp > hi else "중급")
+
+    return grades
+
 
 # ══════════════════════════════════════════════════════
 # 유틸
@@ -141,7 +196,7 @@ def build_category_costs(line_items: list[dict], total_cost: int) -> dict[str, i
     return {f"cost_{k}": v for k, v in raw.items()}
 
 
-def build_metadata(data: dict) -> dict:
+def build_metadata(data: dict, material_grade: str = "중급") -> dict:
     """ChromaDB metadata 딕셔너리 구성."""
     article_id   = str(data.get("article_id", ""))
     size_pyeong  = int(data.get("size_pyeong") or 0)
@@ -166,6 +221,7 @@ def build_metadata(data: dict) -> dict:
         "size_pyeong":     size_pyeong,
         "total_cost":      total_cost,
         "cost_per_pyeong": cost_per_pyeong,
+        "material_grade":  material_grade,
         **has_fields,
         **category_costs,          # cost_철거, cost_도배, cost_타일, ...
         "image_path":      image_path,
@@ -220,6 +276,13 @@ def main():
     articles = load_articles()
     print(f"[DIR] JSON 파일 로드: {len(articles)}개\n")
 
+    # 자재등급 일괄 추론 (전체 데이터 기반 버킷 분위수)
+    grades = assign_material_grades(articles)
+    grade_counts = {"일반": 0, "중급": 0, "고급": 0}
+    for g in grades.values():
+        grade_counts[g] = grade_counts.get(g, 0) + 1
+    print(f"[등급] 일반 {grade_counts['일반']}개 / 중급 {grade_counts['중급']}개 / 고급 {grade_counts['고급']}개\n")
+
     added = skipped_no_parse = 0
 
     for data in articles:
@@ -233,8 +296,9 @@ def main():
             skipped_no_parse += 1
             continue
 
+        grade    = grades.get(article_id, "중급")
         document = build_document(data)
-        metadata = build_metadata(data)
+        metadata = build_metadata(data, material_grade=grade)
 
         collection.upsert(
             ids=[article_id],
