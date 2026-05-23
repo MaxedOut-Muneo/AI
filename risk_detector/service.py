@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import os
 from typing import Any
 
 from risk_detector.analyzer import RiskAnalyzer
@@ -23,7 +24,10 @@ class RiskDetectorService:
         all_items = []
         for raw in command.image_files:
             chunks = self.chunker.prepare_chunks(raw)
-            with ThreadPoolExecutor(max_workers=min(3, len(chunks) or 1)) as ex:
+            configured_workers = int(os.getenv("RISK_DETECTOR_MAX_WORKERS", "1"))
+            configured_workers = max(1, min(2, configured_workers))
+            max_workers = min(configured_workers, len(chunks) or 1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 chunk_results = list(ex.map(self.parser.parse_chunk, chunks))
             all_items.extend(self._merge_chunk_results(chunk_results))
 
