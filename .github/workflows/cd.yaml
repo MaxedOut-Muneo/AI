@@ -134,5 +134,6 @@ jobs:
             "${IMAGE}"
 
           ${DOCKER} ps --filter "name=${CONTAINER_NAME}" --filter "status=running" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"
-          ${DOCKER} image prune -f --filter "until=72h"
+          ${DOCKER} image prune -af
+          ${DOCKER} system df
           EOF
