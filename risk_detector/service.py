@@ -10,6 +10,17 @@ from risk_detector.formatter import ResponseFormatter
 from risk_detector.models import RiskIssue
 from risk_detector.parser import ClaudeVisionParser
 
+CONTEXT_CARRYING_KEYWORDS = [
+    "양중",
+    "운반",
+    "사다리차",
+    "엘리베이터",
+    "EV",
+    "계단",
+    "양중비",
+    "운반비",
+    "하역",
+]
 
 class RiskDetectorService:
     def __init__(self) -> None:
@@ -33,6 +44,7 @@ class RiskDetectorService:
 
         if all_items:
             issues, detected_processes = self.analyzer.analyze(all_items)
+            self._add_contextual_issues(command, all_items, issues, detected_processes)
         else:
             issues = [
                 RiskIssue(
@@ -82,3 +94,33 @@ class RiskDetectorService:
             raise ValueError(f"지원하지 않는 공간유형입니다: {command.space_type}")
         if not command.image_files or not any(command.image_files):
             raise ValueError("최소 1개 이상의 견적서 이미지가 필요합니다.")
+    
+    def _add_contextual_issues(
+        self,
+        command: AnalyzeRiskCommand,
+        line_items: list[dict[str, Any]],
+        issues: list[RiskIssue],
+        detected_processes: list[str],
+    ) -> None:
+        if command.floor < 5:
+            return
+
+        search_text = " ".join(
+            f"{item.get('category', '')} {item.get('description', '')} {item.get('notes', '')}"
+            for item in line_items
+        )
+        has_carrying_cost = any(keyword in search_text for keyword in CONTEXT_CARRYING_KEYWORDS)
+        if has_carrying_cost:
+            return
+
+        issues.append(
+            RiskIssue(
+                "불분명",
+                "공통",
+                "고층 시공 운반/양중 비용 정보 미기재",
+                f"{command.floor}층 시공 조건이지만 견적서에서 양중/운반 관련 항목이 확인되지 않습니다.",
+                "고층 작업 시 운반비·양중비·사다리차 비용 포함 여부를 업체에 확인하세요.",
+            )
+        )
+        if "공통" not in detected_processes:
+            detected_processes.append("공통")
